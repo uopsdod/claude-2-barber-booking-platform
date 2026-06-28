@@ -13,13 +13,13 @@ A shop here is the aggregator account that runs one-or-more barbers (a one-man s
 
 By the end the student has:
 
-1. A v1 landing page (`/`) for the **barber booking platform** — a **Novara-style hair marketplace** look (NOT the old 3-feature-card hero): a serif hero with split hairstyle photos + a search bar, a trust logo strip, a 4-icon feature row, and a "Popular styles / top barbers" grid — plus a `/login` auth page with a **Customer ↔ Shop tab/toggle** and an authenticated post-login landing (`/barbers` browse, or a "dashboard coming soon" shell).
+1. A v1 landing page (`/`) for the **barber booking platform** — a **Novara-style hair marketplace** look (NOT the old 3-feature-card hero): a serif hero with split hairstyle photos + a search bar, a trust logo strip, a 4-icon feature row, and a **"Popular" grid of featured barbers** (barbers are the product — not separate "styles") — plus a `/login` auth page with a **Customer / Barber role tab** (the labels; the values written are `customer` / `shop`) and a **role-aware** authenticated post-login shell at `/barbers` (a "coming soon" placeholder that differs for a customer vs a barber, with a small "barber" pill shown for shop accounts).
 2. A **GitHub repo** (created by Lovable) holding that code, made **public**.
 3. A **Cowork desktop project** with **AWS API MCP**, **Vercel Connect**, and **Supabase Connector** installed — the workbench every later milestone uses.
 4. The **GitHub PAT cached in AWS Secrets Manager** (`barber-project/github`), so this and every later session **recall the same token to modify the repo** instead of re-pasting one.
 5. A **live Vercel URL** that auto-deploys the repo on every push.
 6. **Auth wired up** — register / log in / log out. v1 starts on **Lovable Cloud** (fastest path to a working sign-up), then **swaps to the student's own Supabase project**.
-7. A **`profiles` table with a `role` column** (`buyer` default, set `shop` via the sign-up tab) plus a `display_name` column — created by an `on_auth_user_created` trigger — the seam M1.1 (shop) and the M2.1 prereq (admin) build on. Unlike the flight course, **Supabase here will hold real app data** from M1.1 on (barbers, bookings, payouts), not auth-only.
+7. A **`profiles` table with a `role` column** (`customer` default, set `shop` via the sign-up tab) plus a `display_name` column — created by an `on_auth_user_created` trigger — the seam M1.1 (shop) and the M2.1 prereq (admin) build on. Unlike the flight course, **Supabase here will hold real app data** from M1.1 on (barbers, bookings, payouts), not auth-only.
 
 **Out of scope for M0:** the barber/schedule tables, the booking flow, Stripe, the admin payout page, and the custom domain. Those are M1.1 and later.
 
@@ -94,32 +94,36 @@ There is **no separate "create a blank project" step** — that just burns a Lov
 
 **The full prompt (paste verbatim):** — replace `Barberly` with your chosen brand.
 
-> Build a SaaS landing page + authenticated app shell for **Barberly**, a **barber / hair-stylist booking marketplace** where customers find a stylist, browse styles (cut / color / perm / beard), and book an appointment online — and where barbers list a profile and publish their schedule. Targeted at people who want to discover a good barber and book a slot in a few taps.
+> Build a SaaS landing page + authenticated app shell for **Barberly**, a **barber / hair-stylist booking marketplace** where customers find a stylist and book an appointment online — and where barbers list a profile and publish their schedule. Targeted at people who want to discover a good barber and book a slot in a few taps. The site is **barber-centric: barbers are the product.** A barber offers services (Cut / Color / Perm / Beard) at a starting price; "styles" are not separate listings.
 >
 > Design language — match this reference look closely (a clean, modern, editorial e-commerce marketplace):
 > - Warm **beige / cream** palette on near-white backgrounds, with a dark near-black accent for buttons.
-> - **Serif display headlines** (think a refined fashion-editorial serif) paired with a clean sans-serif body (Inter or similar). Generous whitespace, rounded cards.
+> - **Serif display headlines** (refined fashion-editorial serif) paired with a clean sans-serif body (Inter or similar). Generous whitespace, rounded cards.
 > - Mobile responsive, tasteful subtle fade-in animations.
 >
 > The site must include:
 >
 > 1. A public landing page (`/`) with, in this order:
->    - **Navbar**: the wordmark **"Barberly"** top-left; nav links *Styles / Barbers / Book / Contact*; a search field; and a dark rounded-pill **"Login"** button top-right.
+>    - **Navbar**: the wordmark **"Barberly"** top-left; a search field; and a dark rounded-pill **"Login"** button top-right. **No other nav links in v1** (no *Styles / Barbers / Book / Contact* tabs — booking and barber browsing arrive in later milestones, and dead in-page anchors should not appear).
 >    - **Hero**: an eyebrow label "New Look", a big serif headline **"Style with Confident Hair"**, **two styled-hair / barber photos split left and right** of the headline, and a centered **search bar** with placeholder "Find your stylist or search a style", plus filter chips: *All / Cut / Color / Perm / Beard*.
 >    - **Trust logo strip**: a horizontal row of partner-salon / brand logos directly under the hero.
->    - **Feature row (exactly 4 icon + label cells)** under a heading "Best booking experience": **Verified Barbers**, **Instant Booking**, **Secure Payment**, **Top-Rated Styles** — each a small icon with a short label.
->    - **"Popular" grid**: a heading "Popular" and a card grid of featured hairstyles / top barbers — each card shows an image, a name, a "from $—" price, a star rating, and a small "Popular" badge.
+>    - **Feature row (exactly 4 icon + label cells)** under a heading "Best booking experience": **Verified Barbers**, **Instant Booking**, **Secure Payment**, **Top-Rated Styles**.
+>    - **"Popular" grid**: a heading "Popular" and a card grid of **featured barbers (not styles)**. Each card shows a **barber portrait**, the **barber's name**, **shop / location**, a row of **service chips** (subset of Cut / Color / Perm / Beard), a **star rating with review count**, a **"from $—" starting price**, and a small **"Popular" badge**. Cards are clickable blocks with a hover lift (destination is a placeholder for v1).
 >    - **Footer** with copyright "© 2026 Barberly".
 >
-> 2. Authentication using Lovable's built-in Supabase-style auth (Lovable Cloud is fine for this v1; we'll swap to a user-owned Supabase project later):
+> 2. Authentication using Lovable's built-in Supabase-style auth (Lovable Cloud is fine for v1; we'll swap to a user-owned Supabase project later):
 >    - A combined **Sign Up / Sign In page at `/login`** with email + password.
->    - On the **Sign Up** form, include a **role selector as a TAB / segmented toggle at the top of the form** with two options: **"I'm a Customer"** (role value `buyer`) and **"I'm a Shop"** (role value `shop`). Default to Customer. (We'll persist this choice to the user's profile in a later step; for now, just capture it in the form state and pass it into the sign-up call's user metadata, e.g. `options.data.role`.)
+>    - On the **Sign Up** form, include a **role selector as a TAB / segmented toggle at the top of the form** with two options labeled **"Customer"** (role value `customer`) and **"Barber"** (role value `shop`). Default to Customer. Capture the choice in form state and pass it into the sign-up call's user metadata (`options.data.role`).
 >    - Sign Out functionality.
->    - Email confirmation can be disabled for simplicity in this v1.
+>    - Email confirmation disabled for v1.
 >
-> 3. After signing in, land the user on a page at **`/barbers`** that, for now, shows a simple authenticated shell: greet the signed-in user by email 「Hi {user.email}」 and a placeholder 「附近的理髮師即將上線 — 下一個里程碑會加上瀏覽與預約功能。」 (English: "Barbers near you are coming soon — browse & booking arrive in the next milestone."), plus a Sign Out button in the header.
+> 3. After signing in, land the user on **`/barbers`**, a simple authenticated shell:
+>    - A **header** with the **Barberly wordmark** on the left, and on the right: the greeting **Hi {user.email}**, then — **only if** the account's `user_metadata.role === "shop"` — a small rounded **pill tag** rendered next to the email reading **"barber"** (no tag is rendered for Customer accounts), then a **Sign Out** button.
+>    - **Body content is role-aware:**
+>      - **Customer:** 「附近的理髮師即將上線 — 下一個里程碑會加上瀏覽與預約功能。」 / "Barbers near you are coming soon — browse & booking arrive in the next milestone."
+>      - **Barber:** 「理髮師後台即將上線 — 下一個里程碑會加上個人檔案、服務項目與排班管理。」 / "Your barber dashboard is coming soon — profile, services & schedule arrive in the next milestone."
 >
-> Out of scope for this v1: the barber onboarding form, the barber/services/schedule tables, the booking flow, payments, and any custom database tables (do NOT create `barbers` / `bookings` / `profiles` tables yet — only use Supabase's default `auth.users`; capture the chosen role in auth user metadata only). Those come in later milestones. Stick to landing page + role-tab auth + the placeholder `/barbers` shell.
+> Out of scope for v1: the barber onboarding form, the barber / services / schedule tables, the booking flow, payments, and any custom database tables (do NOT create `barbers` / `bookings` / `profiles` tables yet — only use Supabase's default `auth.users`; capture the chosen role in auth user metadata only). Those come in later milestones. Stick to landing page + role-tab auth + the **role-aware `/barbers` placeholder shell**.
 
 **Why this prompt is shaped this way:** it pins the **Novara-style marketplace sections** (hero+search, logo strip, 4-icon row, popular grid) so you don't re-roll for layout; it puts the **role tab** on sign-up (the seam Step 9 turns into `profiles.role`); and it captures the role in **auth metadata only** (no custom tables yet — those are M1.1, see [[supabase-best-practice]]).
 
@@ -130,8 +134,8 @@ There is **no separate "create a blank project" step** — that just burns a Lov
 Before touching GitHub, confirm the generation is good:
 
 - Get the **Lovable preview URL** (e.g. `https://id-preview--<uuid>.lovable.app/`).
-- Check the **landing-page style** — serif hero with the two split photos + search bar, the logo strip, the **4-icon feature row**, the **Popular grid**, footer. It must look like the marketplace reference, **NOT** a 3-feature-card layout.
-- Check the **sign-up tab works** — the Customer/Shop toggle is visible on sign-up; signing up as either lands you on `/barbers` with 「Hi {email}」.
+- Check the **landing-page style** — serif hero with the two split photos + search bar, the logo strip, the **4-icon feature row**, the **Popular grid of featured barbers** (barber cards — portrait, name, shop/location, service chips, rating, "from $—"), footer. It must look like the marketplace reference, **NOT** a 3-feature-card layout. The navbar has **only** the wordmark + search + Login (no dead *Styles / Barbers / Book / Contact* anchors).
+- Check the **sign-up tab works** — the **Customer / Barber** toggle is visible on sign-up; signing up as either lands you on `/barbers` with 「Hi {email}」. Confirm the post-login shell is **role-aware**: a **Barber** account shows the **"barber" pill** next to the email + the dashboard-coming-soon copy; a **Customer** account shows no pill + the browse-coming-soon copy.
 
 Only move on once the preview looks right and auth works — re-prompting in Lovable now is cheaper than after GitHub/Vercel are wired.
 
@@ -266,7 +270,7 @@ v1 ran on **Lovable Cloud**. Move auth to the student's **own** Supabase project
 
 ### Step 9 — Add the `profiles.role` stub (trigger on signup)
 
-The role tab (Step 1) captures `buyer`/`shop` in auth metadata; now persist it into a real `profiles` table so M1.1 (shop pages) and the M2.1 prereq (admin promotion) have a `role` to gate on.
+The role tab (Step 1) captures `customer`/`shop` in auth metadata; now persist it into a real `profiles` table so M1.1 (shop pages) and the M2.1 prereq (admin promotion) have a `role` to gate on.
 
 Have Claude Code apply this as a **Supabase migration** (never a raw console edit — [[supabase-best-practice]]). Use the Supabase MCP `apply_migration`:
 
@@ -280,7 +284,7 @@ create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   email text,
   display_name text,           -- the user's personal/business name (set at sign-up); for a shop this is the payout name
-  role text not null default 'buyer' check (role in ('buyer','shop','admin')),
+  role text not null default 'customer' check (role in ('customer','shop','admin')),
   bank_account_name   text,
   bank_account_number text,
   created_at timestamptz not null default now()
@@ -303,7 +307,7 @@ begin
   values (
     new.id,
     new.email,
-    coalesce(nullif(new.raw_user_meta_data->>'role',''), 'buyer')
+    coalesce(nullif(new.raw_user_meta_data->>'role',''), 'customer')
   );
   return new;
 end;
@@ -313,11 +317,28 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- BACKFILL: the trigger only fires on FUTURE signups, so any users who already
+-- signed up during M0 testing (Steps 2 / 8.4) have NO profiles row. Create one
+-- for each, reading the role from their existing sign-up metadata.
+-- NOTE the fallback here is 'shop', NOT 'customer' (the trigger's default):
+-- a user old enough to predate the trigger is almost certainly YOUR own early
+-- barber/shop test account created before the role tab was wired, so 'shop' is
+-- the safer guess for a metadata-less row. Fix any wrong guess with a one-off
+-- UPDATE migration. on conflict do nothing → safe to re-run; never clobbers a
+-- row the trigger already made.
+insert into public.profiles (id, email, role)
+select
+  u.id,
+  u.email,
+  coalesce(nullif(u.raw_user_meta_data->>'role',''), 'shop')
+from auth.users u
+on conflict (id) do nothing;
 ```
 
-> **Note for Claude Code:** the role allowlist is `buyer | shop | admin`, but the **sign-up form only ever writes `buyer` or `shop`** — `admin` is never self-served. It's promoted manually in the M2.1 prerequisite. The `update_own` policy lets a user edit their own profile but **does not let them change `role` to `admin`** in practice because the admin pages are gated server-side; for hardening, M2.2 keeps `role` changes off the client path. (See [[supabase-best-practice]].)
+> **Note for Claude Code:** the role allowlist is `customer | shop | admin`, but the **sign-up form only ever writes `customer` or `shop`** — `admin` is never self-served. It's promoted manually in the M2.1 prerequisite. The `update_own` policy lets a user edit their own profile but **does not let them change `role` to `admin`** in practice because the admin pages are gated server-side; for hardening, M2.2 keeps `role` changes off the client path. (See [[supabase-best-practice]].)
 
-**Verify:** sign up a new buyer and a new shop on the live site → in Supabase, `select id, email, role from public.profiles;` shows two rows with the right roles.
+**Verify:** `select id, email, role from public.profiles;` returns **one row per user in `auth.users`** — the backfill caught everyone who signed up during M0 testing, with the role from their sign-up metadata (no orphan auth users left without a profile). Then sign up a NEW customer and a NEW shop on the live site and confirm the trigger adds their rows with the right roles. Cross-check the counts match: `select (select count(*) from auth.users) as users, (select count(*) from public.profiles) as profiles;` — the two numbers should be equal.
 
 ---
 

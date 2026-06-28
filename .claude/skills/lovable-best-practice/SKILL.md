@@ -75,7 +75,7 @@ The **hard rules** apply identically in both modes — only the verification mec
 **Why:** This toggle is the **seam** the whole role model hangs on — M0 Step 9 turns the captured metadata into `profiles.role` (via the signup trigger), M1.1 gates the shop pages on `role = 'shop'`, and the M2.1 prereq promotes an `admin`. If the tab is missing, or the role isn't passed into the sign-up call, there's no role to persist and the customer/shop split breaks downstream. It must be on **sign-up** (where you choose who you are), not sign-in.
 
 **How to apply:**
-- The sign-up call carries `options: { data: { role } }` with `role` ∈ `buyer | shop` (the Customer tab maps to `buyer`, the Shop tab to `shop`; the default is `buyer`).
+- The sign-up call carries `options: { data: { role } }` with `role` ∈ `customer | shop` (the Customer tab maps to `customer`, the Shop tab to `shop`; the default is `customer`).
 - **Never** offer "Sign up as Admin" — `admin` is promoted manually later ([[supabase-best-practice]]), never self-served.
 - If a re-roll drops the tab or stops passing the role, restore it before moving on — Step 9 depends on it.
 
