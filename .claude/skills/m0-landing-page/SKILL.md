@@ -21,6 +21,16 @@ Do NOT load this skill for M1.1+ — they have their own skills.
 
 The v1 barber booking platform: a **Novara-style hair-marketplace landing** (serif hero + split photos + search, trust logo strip, 4-icon feature row, "Popular" grid of **featured barbers**) + a `/login` auth page with a **Customer / Barber role tab** + a **role-aware `/barbers` post-login shell** — built on **Lovable → GitHub (public) → Cowork project + AWS/Vercel/Supabase connectors → GitHub PAT cached in Secrets Manager → deployable build pushed → Vercel deploy → auth swapped to the student's own Supabase → a `profiles.role` stub (trigger + backfill)**. Out of scope: barber/schedule tables, booking, Stripe, admin payouts, custom domain (M1.1+). **The exact steps, prompts, and SQL are in [`m0-landing-page.txt`](m0-landing-page.txt) — read it.**
 
+## Architecture
+
+![Barber platform architecture (M0) — the build-and-deploy loop. The student drives Cowork (claude code), which pulls the GitHub PAT from AWS Secrets Manager (the API Keys / aws connector) and pushes the Lovable-generated UI to the GitHub Repo. From the Repo, the Product Site deploys to its Vercel host and the Database (Supabase) is wired via its connector. Lovable (the Landing Page source) is struck through because after M0 the student swaps auth onto their own Supabase — Lovable's role ends once the code is in GitHub. The dashed "Connector" lines are the AWS / Vercel / Supabase connectors set up in this milestone.](assets/architecture-m0.png)
+
+How the diagram maps to M0:
+- **You → Cowork (claude code):** the student drives the whole loop from the Cowork project.
+- **Cowork → API Keys (aws) → Repo (GitHub):** the GitHub PAT is cached in AWS Secrets Manager and recalled to push the Lovable build to the repo (the **Personal Token** arrow).
+- **Repo → Product Site (Vercel) + Database (Supabase):** the pushed build deploys to Vercel; auth is then swapped onto the student's own Supabase (the `profiles.role` stub).
+- **Landing Page (Lovable) struck through:** Lovable generates the v1 UI, but once the code lives in GitHub the student moves off Lovable Cloud — it's a starting point, not a runtime dependency.
+
 ## 🔑 Canonical role values (pinned — do not let a build drift)
 
 The three roles are **`customer` · `shop` · `admin`**. The sign-up tab labels are **"Customer"** and **"Barber"**, but the *values* written to `options.data.role` / `profiles.role` are **`customer`** and **`shop`** — **never `buyer`, never `barber`** as a value. `admin` is never written at sign-up (promoted in the M2.1 prereq). If a generated build emits `buyer`, it fails checklist **D3** (role-value mismatch) — **fix the APP to emit `customer`, don't relax the DB.** (Full fix note in the `.txt` Step 9 + [[supabase-best-practice]].)
@@ -35,7 +45,7 @@ The three roles are **`customer` · `shop` · `admin`**. The sign-up tab labels 
 
 When `m0-landing-page-checklist` is green, tell the student:
 「M0 完成了！你現在有一個能用 Customer / Shop 兩種身分註冊登入的線上理髮預約入口網站，而且 Cowork 專案、AWS / Vercel / Supabase 連接器、GitHub token、`profiles.role` 都備好了。準備好的話跟我說『啟動 M1.1』，我們來讓理髮店開店、建立預約排程。」
-Then load `[[m1.1-barber-shop-and-schedule]]` (run `[[m1.1-barber-shop-and-schedule-prerequisites]]` first — it reuses the AWS access, GitHub token, and Supabase project set up here).
+Then load `[[m1.1-seller-setup]]` (run `[[m1.1-seller-setup-prerequisite]]` first — it reuses the AWS access, GitHub token, and Supabase project set up here).
 
 ## Reference
 
