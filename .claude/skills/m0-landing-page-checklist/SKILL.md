@@ -76,6 +76,7 @@ Ask the student for:
   select id, email, role from public.profiles order by created_at desc limit 3;
   ```
   Expect the just-created user with `role = 'shop'` (and a separately-created customer with `role='customer'`).
+  > **🔑 Canonical role values: `customer` · `shop` · `admin`.** If a Customer sign-up shows `role = 'buyer'` (or anything not in the allowlist), the app build is **emitting a stale value** — the v1 was generated before the `buyer → customer` rename. **The fix is always: make the APP emit `customer`** (search the front-end for `'buyer'` / `role: "buyer"` in the sign-up call and change it to `customer`, push, redeploy) — **do NOT relax the DB to allow `buyer`**, and do not ask which to do. The DB/course are the source of truth; the app conforms.
 - **D3b** **No orphan auth users** — every existing `auth.users` row has a matching `profiles` row (the Step 9 backfill caught users who signed up during earlier M0 testing, not just future signups):
   ```sql
   select (select count(*) from auth.users) as users,
