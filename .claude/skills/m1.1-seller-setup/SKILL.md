@@ -5,6 +5,8 @@ description: 抽成制理髮師預約平台 Milestone 1.1 — let a shop list ON
 
 # M1.1 — 理髮店上架與預約排程（上架理髮師、建立預約排程）
 
+> **Workflow note (read first):** **Lovable is M0-only.** From M1.1 on the loop is **code → GitHub → Vercel**: Claude Cowork writes the code in the repo (Vite/React + Supabase migrations), commits + pushes (recall the PAT from Secrets Manager), and Vercel auto-deploys. There is **no "paste into Lovable" step** in this milestone — the verbatim blocks below are **specs to implement in the codebase**, not Lovable prompts.
+
 ## What this skill does
 
 Walks the student through Milestone 1.1 — the **shop side**: a customer becomes a shop, lists **one or more barbers**, lists services with prices, uploads **sample hairstyle photos** (the barber's portfolio of past work), publishes bookable time slots, and saves their **shop-level payout (bank) details**. (A shop is the aggregator account that runs one-or-more barbers — a one-man shop works too.) This is the **first milestone where Supabase holds real application data** (M0 was auth-only): you create the single-row `platform_settings` config plus four tenant tables + a Storage bucket with RLS via `apply_migration`, then build two shop surfaces on top of them.
@@ -18,12 +20,15 @@ By the end the student has:
 5. A **`services` table** (`barber_id`, name, **category** `cut / color / perm / beard`, **price**, **required_slots**) — the menu a customer books from. `price` is an integer in `platform_settings.currency`; `required_slots` is how many consecutive `bookable_slots` the service needs.
 6. A **`bookable_slots` table** (`barber_id`, `starts_at`, `ends_at`) — published time windows, **with no status column**. Each slot is a **`platform_settings.slot_minutes`-long unit** (configurable, default 30 min): the barber publishes those windows, and in M1.2 a booking spans **N = service.required_slots** consecutive slots. A slot is bookable until a booking references it (the booking lifecycle lives on `bookings` + the `booking_slots` join table, M1.2). 
 
-7. A **`barber_photos` table + a `barber-photos` Supabase Storage bucket** — the barber's **sample hairstyle photos** (their past work). Each row is `barber_id`, `storage_path`, `caption`, `is_featured`, `sort_order`. The shop uploads/deletes; **anyone may view** (it's the public portfolio shown on `/barbers/[id]` in M1.2). The `is_featured` flag is what the **M4 egg unit** will feed to AI to auto-write the barber's `intro`.
+7. A **`barber_photos` table + a `barber-photos` Supabase Storage bucket** — the barber's **sample hairstyle photos** (their past work). Each row is `barber_id`, `storage_path`, `caption`, `is_featured`, `sort_order`. The shop uploads/deletes; **anyone may view** (it's the public portfolio). The `is_featured` flag marks the barber's best work.
+   > **Note for Claude Code (author-only, do NOT surface to the student):** `is_featured` is the column the **M4 egg unit** (`m4-ai-autofill-barber`) later feeds to a vision model to auto-write the barber's `intro`. Keep the column now (schema stays forward-compatible), but **don't** mention M4/AI in any label, placeholder, or help text the student ships.
 8. **RLS on every table** — a shop can only CRUD **their own** barbers / services / slots / photos; the **bank fields on `profiles` are readable only by the shop + an admin**, never world-readable; photo files are public-read but shop-write.
 9. A **shop onboarding flow** — create/manage **one or more barbers** (barber profile) + a **shop-level "payout settings"** form with **REQUIRED bank info** (account name + number; *"use test data first"*) + a **sample hairstyle photo uploader**.
 10. A **`/shop/bookings` page** — publish/edit bookable slots **and** a service & price editor (per barber).
 
-**Out of scope for M1.1:** the customer browse/booking flow (`/barbers`, `/barbers/[id]`, the booking dialog, `bookings` table) is **M1.2** (which also renders the photo gallery on the detail page); Stripe payments are **M2.1**; the shop's **`/shop/earnings`** page ships in **M2.2** (it needs paid bookings to show numbers); the admin payout page is **M2.2**. **AI auto-writing the barber's `intro` from the featured photos is the M4 egg unit** (`m4-ai-autofill-barber`, course 4-19) — M1.1 only stores the photos + the `is_featured` flag that M4 will consume.
+**Out of scope for M1.1 (build only the shop side):** the customer browse/booking flow, payments, the shop earnings page, and the admin payout page are **not** part of this milestone — M1.1 ends at "a shop can list barbers/services/slots/photos and save bank info." Build only what the steps below describe.
+
+> **Note for Claude Code (author-only — do NOT frame any of this to the student as "a future milestone"):** the deferred pieces and where they land: the customer browse/booking flow (`/barbers`, `/barbers/[id]`, the booking dialog, `bookings` table) is **M1.2** (it also renders the photo gallery on the detail page); Stripe payments are **M2.1**; the shop's **`/shop/earnings`** page is **M2.2** (needs paid bookings); the admin payout page is **M2.2**; AI auto-writing the barber's `intro` from the featured photos is the **M4 egg unit** (`m4-ai-autofill-barber`, course 4-19) — M1.1 only stores the photos + the `is_featured` flag M4 consumes. Keep the schema forward-compatible, but keep these references out of student-facing UI copy and conversation while in M1.1.
 
 ## When to load this skill
 
@@ -37,16 +42,18 @@ Run **`m1.1-seller-setup-prerequisite` first** — it confirms M0 is green (auth
 
 ## Execution mode (Cowork-first)
 
-This milestone runs in **Cowork on Desktop**, the workbench M0 set up. Two kinds of work:
+This milestone runs in **Cowork on Desktop**, the workbench M0 set up. **Unlike M0, M1.1 does not use Lovable** — the UI is written directly in the repo. Two kinds of work:
 
 | Work | Cowork mode | CLI mode |
 |---|---|---|
-| UI changes (onboarding form, `/shop/bookings`) | Prompt **Lovable**, then push to GitHub via the cached token | Same Lovable prompt; `git push` with the PAT from Secrets Manager |
-| Schema + RLS (`platform_settings`/`barbers`/`services`/`bookable_slots`) | **Supabase MCP** `mcp__claude_ai_Supabase__apply_migration` | `supabase db push` / SQL editor (but the course always uses `apply_migration`) |
+| UI changes (onboarding form, `/shop/bookings`) | **Edit the repo directly** (Vite/React), then commit + push to GitHub via the cached token | Same: edit the repo, `git push` with the PAT from Secrets Manager |
+| Schema + RLS (`platform_settings`/`barbers`/`services`/`bookable_slots`) | The Supabase MCP **`apply_migration`** tool | `supabase db push` / SQL editor (but the course always uses `apply_migration`) |
+| Regenerate DB types after a migration | The Supabase MCP **`generate_typescript_types`** tool → overwrite `src/integrations/supabase/types.ts` | same MCP call |
+| RLS sanity check | The Supabase MCP **`get_advisors`** tool | same MCP call |
 
-| RLS sanity check | **Supabase MCP** `mcp__claude_ai_Supabase__get_advisors` | same MCP call |
+> **Tool names:** this course runs through the **Supabase MCP** connector, whose tools are namespaced **per session** (e.g. `mcp__<session-id>__apply_migration`). Refer to them by their bare names — **`apply_migration`**, **`execute_sql`**, **`generate_typescript_types`**, **`get_advisors`**, **`list_tables`** — and call whichever namespaced variant your session exposes; the calls map 1:1.
 
-Every Supabase change goes through a **migration** (`apply_migration`), never a raw ad-hoc `UPDATE` in the SQL editor — see [[supabase-best-practice]]. RLS is **on by default** for these multi-tenant tables.
+Every Supabase change goes through a **migration** (the `apply_migration` tool), never a raw ad-hoc `UPDATE` in the SQL editor — see [[supabase-best-practice]]. RLS is **on by default** for these multi-tenant tables. **Lovable is M0-only** — see [[lovable-best-practice]].
 
 ## Architecture
 
@@ -63,10 +70,11 @@ How the diagram maps to M1.1:
 You (Claude Code) drive the student through **6 steps**, in order. Don't dump them all at once — after each step, **wait for confirmation** before moving on.
 
 1. Wire the shop role: the sign-up tab + a "Become a shop" flow set `profiles.role = 'shop'`
-2. Apply the `platform_settings` / `barbers` / `services` / `bookable_slots` / `barber_photos` migration (`apply_migration`)
-3. Add the RLS policies (own-row CRUD; shop-level bank fields on `profiles`, shop + admin only; `platform_settings` world-read/admin-write)
-3a. Create the `barber-photos` Storage bucket + its Storage policies
-4. RLS sanity check with `get_advisors`
+2. Apply the `platform_settings` / `barbers` / `services` / `bookable_slots` / `barber_photos` migration (the `apply_migration` tool)
+3. Add the RLS policies (own-row CRUD; shop-level bank fields on `profiles`, shop + admin only; `platform_settings` world-read/admin-write; `barbers_public` view with `security_invoker = on`)
+3a. Create the `barber-photos` Storage bucket (bucket-insert SQL) + its Storage policies
+3b. Regenerate `src/integrations/supabase/types.ts` (the `generate_typescript_types` tool) so the new tables are typed
+4. RLS sanity check with the `get_advisors` tool
 5. Build the shop onboarding (shop payout settings + create/manage one-or-more barbers + photo uploader)
 6. Build `/shop/bookings` — slot publisher + service & price editor → run the checklist
 
@@ -74,7 +82,7 @@ You (Claude Code) drive the student through **6 steps**, in order. Don't dump th
 
 ### Step 1 — Wire the shop role (sign-up tab + "Become a shop")
 
-M0 already captures `customer` / `shop` from the sign-up role tab into `profiles.role`. M1.1 makes that role **mean something** and adds a path for an existing customer to upgrade. Paste this into **Lovable**:
+M0 already captures `customer` / `shop` from the sign-up role tab into `profiles.role`. M1.1 makes that role **mean something** and adds a path for an existing customer to upgrade. **Implement this in the codebase** (edit the repo directly — no Lovable), then commit + push:
 
 > 在現有的網站上加入「開店 / Become a shop」的流程，並讓註冊頁的角色分頁真正生效：
 >
@@ -90,7 +98,7 @@ M0 already captures `customer` / `shop` from the sign-up role tab into `profiles
 
 ### Step 2 — Apply the schema migration (`platform_settings` / `barbers` / `services` / `bookable_slots`)
 
-This is the milestone's core. Apply it as **one Supabase migration** via `mcp__claude_ai_Supabase__apply_migration` (name it e.g. `m1_1_barber_shop_schema`). **Never** type these into the SQL editor as ad-hoc statements — [[supabase-best-practice]] requires a migration file so the change is reviewable and replayable.
+This is the milestone's core. Apply it as **one Supabase migration** via the Supabase MCP **`apply_migration`** tool (name it e.g. `m1_1_barber_shop_schema`). **Never** type these into the SQL editor as ad-hoc statements — [[supabase-best-practice]] requires a migration file so the change is reviewable and replayable.
 
 ```sql
 -- ── platform_settings: ONE row of platform-wide config (currency + slot length).
@@ -231,8 +239,11 @@ create policy "photos_write_own" on public.barber_photos
     exists (select 1 from public.barbers s where s.id = barber_photos.barber_id and s.shop_id = auth.uid())
   );
 
--- ── public browse projection of barbers (no sensitive columns; barbers has none now) ──
-create or replace view public.barbers_public as
+-- ── public browse projection of barbers (no sensitive columns; barbers has none now).
+--    security_invoker = on → the view runs with the CALLER's privileges, so it respects
+--    barbers' own RLS (which already has a public select policy). This avoids the
+--    ERROR-level `security_definer_view` advisor a plain view would otherwise raise. ──
+create or replace view public.barbers_public with (security_invoker = on) as
   select id, shop_id, name, intro, address, created_at
   from public.barbers;
 
@@ -254,9 +265,15 @@ create policy "profiles_select_admin" on public.profiles
 
 The `barber_photos` table holds metadata; the image **files** live in a Supabase **Storage** bucket. Create a **public** bucket `barber-photos` (public so the M1.2 gallery and the M4 AI step can read the images by URL), with policies that let **only the owning shop upload/delete** under their own `barber_id` prefix.
 
-Create the bucket (Supabase MCP, or dashboard → Storage → New bucket → name `barber-photos`, **Public** ✓). Then apply the Storage RLS as a migration (`m1_1_barber_photos_storage`):
+There is **no MCP "create bucket" tool** — the canonical path is to create the bucket **in SQL**, in the same `m1_1_barber_photos_storage` migration as the policies (apply it via the `apply_migration` tool). (Manual alternative: dashboard → Storage → New bucket → name `barber-photos`, **Public** ✓ — but prefer the SQL so the bucket is versioned with everything else.)
 
 ```sql
+-- Create the public bucket (idempotent — re-running keeps it public). No MCP tool
+-- creates buckets, so this insert IS the bucket-creation step.
+insert into storage.buckets (id, name, public)
+values ('barber-photos','barber-photos', true)
+on conflict (id) do update set public = true;
+
 -- Public READ for the bucket (anyone can view a barber's portfolio image by URL)
 create policy "barber_photos_read" on storage.objects
   for select using ( bucket_id = 'barber-photos' );
@@ -282,61 +299,75 @@ create policy "barber_photos_write_own" on storage.objects
   );
 ```
 
-> **Note for Claude Code:** the upload path convention is **`<barber_id>/<uuid>.<ext>`** — the first segment is the barber id, which the Storage policy checks against ownership, so barber A can't write into barber B's folder even though the bucket is public-read. Store that same path in `barber_photos.storage_path`. The bucket is **public-read on purpose** (portfolio images are meant to be seen, and M4's AI step needs URL access) — there's nothing sensitive in a haircut photo; the sensitive data (bank fields) is on `profiles`, not here.
+> **Note for Claude Code:** the upload path convention is **`<barber_id>/<uuid>.<ext>`** — the first segment is the barber id, which the Storage policy checks against ownership, so barber A can't write into barber B's folder even though the bucket is public-read. Store that same path in `barber_photos.storage_path`. The bucket is **public-read on purpose** (portfolio images are meant to be seen) — there's nothing sensitive in a haircut photo; the sensitive data (bank fields) is on `profiles`, not here. *(Author-only: the public bucket also lets M4's AI step read the images by URL — don't surface that to the student in M1.1.)*
+
+---
+
+### Step 3b — Regenerate the Supabase TypeScript types
+
+The UI work in Steps 5–6 is now **code-first** (no Lovable), so the new tables must be typed or the build won't type-check cleanly against them. After the schema + RLS + Storage migrations land, regenerate the generated types and overwrite the file:
+
+```text
+generate_typescript_types   →  overwrite src/integrations/supabase/types.ts
+```
+
+Then run the build (`npm run build` / `vite build`) to confirm the new tables (`platform_settings`, `barbers`, `services`, `bookable_slots`, `barber_photos`) are typed and nothing is broken.
+
+> **Note for Claude Code:** run this **after** every schema migration in this course, not just here — stale `types.ts` is a common cause of red type errors on otherwise-correct code. The file is generated; never hand-edit it, just regenerate and overwrite.
 
 ---
 
 ### Step 4 — RLS sanity check with `get_advisors`
 
-Before building UI on top, confirm Supabase agrees the tables are locked down. Run `mcp__claude_ai_Supabase__get_advisors` (type **`security`**) and read the report:
+Before building UI on top, confirm Supabase agrees the tables are locked down. Run the Supabase MCP **`get_advisors`** tool (type **`security`**) and read the report:
 
 ```text
-mcp__claude_ai_Supabase__get_advisors  →  type: "security"
+get_advisors  →  type: "security"
 ```
 
 What you want to see:
 - **No `rls_disabled_in_public` warning** for `platform_settings`, `barbers`, `services`, `bookable_slots`, `barber_photos` (RLS is enabled — Step 3), and the `barber-photos` Storage bucket has its read/write policies (Step 3a).
-- If the advisor flags the `barbers_public` **view** as `security_definer` / exposed, that's expected for a read-only public projection (it deliberately drops bank fields). Note it; it's not a leak.
+- A **clean** advisor — including **no `security_definer_view` ERROR** on `barbers_public`, because Step 3 created it with `security_invoker = on` (it runs with the caller's privileges and respects `barbers`' public-read RLS). If you still see that ERROR, the view was created without `security_invoker` — re-apply the Step 3 view DDL.
 - Resolve any **real** finding (e.g. a table with RLS off, or a policy that's `using (true)` for `update`/`delete`) before moving on.
 
-> **Note for Claude Code:** `get_advisors` is the cheap, authoritative gate — run it after **every** schema/RLS migration in this course, not just here. A green security advisor + the checklist's cross-barber-edit test together prove the tenant isolation actually holds.
+> **Note for Claude Code:** `get_advisors` is the cheap, authoritative gate — run it after **every** schema/RLS migration in this course, not just here. With `security_invoker` on the view, a green security advisor is the expected result (no "expected ERROR to ignore"). A green advisor + the checklist's cross-barber-edit test together prove the tenant isolation actually holds.
 
 ---
 
 ### Step 5 — Build the shop onboarding (shop payout settings + create/manage barbers + sample photos)
 
-Now the UI. A shop can run **many barbers**, so this is two pieces: a **shop-level payout settings** form (writes `profiles.bank_account_*`) and a **barber create/manage** form (writes one or more `barbers` rows). Paste into **Lovable**:
+Now the UI. A shop can run **many barbers**, so this is two pieces: a **shop-level payout settings** form (writes `profiles.bank_account_*`) and a **barber create/manage** form (writes one or more `barbers` rows). **Implement this in the codebase** (edit the repo directly — no Lovable), then commit + push:
 
 > 建立「理髮店上架 / Shop onboarding」區，只有登入且 `profiles.role = 'shop'`（或剛從「開店」進來的人）能看到。**一個 shop 可以開很多位理髮師。**
 >
 > **A. 撥款設定 / Payout settings（shop 層級，全部理髮師共用）** — 寫到 **`profiles`**（目前登入者那一筆）：
 > - **匯款戶名 bank_account_name**（**必填**）
 > - **匯款帳號 bank_account_number**（**必填**）
-> - 標註 **「先用測試資料即可 / use test data first」**。這是 shop 的收款帳號，月結時 admin 會把這個 shop 名下所有理髮師的 80% 合併成一筆轉給他（M2.2）。
+> - 標註 **「先用測試資料即可 / use test data first」**。說明文字寫 **「你的理髮店收款的銀行帳戶 / the bank account where your shop gets paid」**。
 >
 > **B. 我的理髮師檔案 / My barbers（可有多位）** — CRUD **`barbers`**（`shop_id = 目前登入者`）：
 > - 列出我名下所有理髮師，提供 **「新增一位理髮師 / Add another barber」**。
-> - 每位理髮師的欄位：**名稱 name**（必填）、**簡介 intro**（選填，多行；提示「之後可用 AI 從作品照自動產生」M4 彩蛋）、**地址 address**（選填）。
+> - 每位理髮師的欄位：**名稱 name**（必填）、**簡介 intro**（選填，多行；placeholder 寫「簡短介紹一下這位理髮師 / a short bio」）、**地址 address**（選填）。
 > - 可編輯 / 刪除我自己的理髮師。**不要**有「只能一位理髮師」的限制——同一個 shop 可以建立多筆 `barbers`。
 >
 > **C. 作品照上傳 / Sample hairstyle photos（每位理髮師各自一組）** — 讓理髮師上傳過去的髮型作品照：
 > - 在某一位理髮師底下上傳多張圖片，存到 Supabase Storage 的 **`barber-photos`** bucket，路徑用 **`<barber_id>/<uuid>.<ext>`**。
 > - 每上傳一張，在 `barber_photos` 寫一筆（`barber_id`、`storage_path`、選填 `caption`、`sort_order`）。
-> - 可勾選 **「精選 / Featured」**（寫 `is_featured=true`）——之後 M4 會用精選作品讓 AI 自動寫 bio。
+> - 可勾選 **「精選 / Featured」**（寫 `is_featured=true`）標記這位理髮師最得意的作品。
 > - 可刪除自己的作品照（同時刪 Storage 檔案與 `barber_photos` 那一筆）。顯示縮圖牆管理排序與精選。
 >
 > **規則：**
-> - **撥款銀行資訊為必填** — shop 沒填就不能收款（月結靠它撥款）。
-> - **銀行欄位在 `profiles`，絕對不要**出現在任何公開頁面或清單；只有本人和 admin（M2.2 撥款頁）能讀。作品照則相反——是公開的，會在 M1.2 的理髮師詳情頁展示。
+> - **撥款銀行資訊為必填** — shop 沒填就不能收款。
+> - **銀行欄位在 `profiles`，絕對不要**出現在任何公開頁面或清單；只有本人和 admin 能讀。作品照則相反——是公開的，任何人都看得到。
 > - 所有讀寫都走 Supabase client + Storage + RLS；不要用 service-role key 在前端。
 
-**Note for Claude Code:** the model is **one shop → many barbers**, so do NOT add a "one barber only" guard (the old `shop_id UNIQUE` is gone). Two opposite visibility rules: **bank fields are on `profiles`, shop+admin-only** (the shop's single payout account, never public), while **`barber_photos` are public-read** (the portfolio is meant to be seen; M1.2 renders it on `/barbers/[id]`). Upload to the `barber-photos` bucket under the `<barber_id>/...` prefix so the Step 3a Storage policy authorizes the write. The **`is_featured`** flag is the set the **M4 egg unit** (`m4-ai-autofill-barber`) feeds to a vision model to draft the bio. Don't wire any real payout integration here; payouts are a manual admin bank transfer recorded in M2.2, **rolled up per shop**.
+**Note for Claude Code:** the model is **one shop → many barbers**, so do NOT add a "one barber only" guard (the old `shop_id UNIQUE` is gone). Two opposite visibility rules: **bank fields are on `profiles`, shop+admin-only** (the shop's single payout account, never public), while **`barber_photos` are public-read** (the portfolio is meant to be seen). Upload to the `barber-photos` bucket under the `<barber_id>/...` prefix so the Step 3a Storage policy authorizes the write. Don't wire any real payout integration here. *(Author-only — keep OUT of student-facing copy: the `is_featured` flag is what the M4 egg unit `m4-ai-autofill-barber` feeds to a vision model to draft the bio; payouts are a manual admin bank transfer rolled up per shop, recorded in M2.2.)*
 
 ---
 
 ### Step 6 — Build `/shop/bookings` (slot publisher + service & price editor) → run the checklist
 
-The shop's control room. Paste into **Lovable**:
+The shop's control room. **Implement this in the codebase** (edit the repo directly — no Lovable), then commit + push:
 
 > 建立理髮店後台頁 **`/shop/bookings`**，只有 `profiles.role = 'shop'` 且擁有理髮師的人能進。兩個區塊：
 >
@@ -345,12 +376,14 @@ The shop's control room. Paste into **Lovable**:
 > - 可新增 / 編輯 / 刪除我自己的服務。
 >
 > **B. 可預約時段發布 / Publish bookable slots** — CRUD `bookable_slots`（屬於我的 `barber_id`）：
-> - 選日期 + 起訖時間建立時段。**每個時段是 `platform_settings.slot_minutes` 長度的單位（可設定，預設 30 分鐘）** —— 想開一段較長的可預約時間，就發布一連串連續的時段（UI 可協助一次產生一天份）。M1.2 的一筆預約會佔掉 **N = service.required_slots** 個連續的時段（直接用 required_slots，不是 ceil(時長/30)）。
+> - 選日期 + 起訖時間建立時段。**每個時段是 `platform_settings.slot_minutes` 長度的單位（可設定，預設 30 分鐘）** —— 想開一段較長的可預約時間，就發布一連串連續的時段（UI 可協助一次產生一天份的時段）。
 > - **`bookable_slots` 沒有 status 欄位** —— 一個時段就是一段「可被預約的時間窗」。
-> - 列出我已發布的時段，可編輯/刪除 **還沒有人預約** 的時段（也就是還沒有 live `bookings` 透過 `booking_slots` 指到它的時段；這個判斷在 M1.2 用 anti-join 做）。
-> - **先不要**做付款或預約 —— 預約與其狀態（`pending_payment` → `paid`）是 M1.2 / M2.1 在 `bookings` 上做的；M1.1 只發布時間窗。
+> - 列出我已發布的時段，可編輯/刪除 **還沒有人預約** 的時段。
+> - **先不要**做付款或預約 —— M1.1 只發布時間窗。
 >
 > 全部透過 Supabase client + RLS：我只看得到、改得了 **我自己** 的服務與時段，別人的看不到也改不了。
+
+> **Note for Claude Code (author-only — keep OUT of student-facing copy):** in M1.2 a booking spans **N = service.required_slots** consecutive slots (use `required_slots` directly, not `ceil(duration/30)`), held via the `booking_slots` join table; a slot's availability is derived via a `NOT EXISTS` anti-join against `booking_slots`, and the booking lifecycle (`pending_payment` → `paid`) lives on `bookings` in M1.2 / M2.1. M1.1 builds none of that — just the time windows.
 
 Then push to GitHub (recall the token from Secrets Manager — don't re-paste) and let Vercel redeploy. Finally verify M1.1:
 
@@ -369,18 +402,28 @@ Then push to GitHub (recall the token from Secrets Manager — don't re-paste) a
 6a. **Photo upload path not matching the Storage policy** — files MUST go under `<barber_id>/...` in the `barber-photos` bucket, or the Step 3a `barber_photos_write_own` policy rejects the upload. Store that same path in `barber_photos.storage_path`. Deleting a photo must delete BOTH the Storage object and the `barber_photos` row.
 7. **Letting `role` flip to `admin`** — the upgrade path writes `shop` only. `admin` is promoted via a one-off migration in the M2.1 prereq, never self-served.
 8. **Building M1.2 here** — no `bookings` table, no `/barbers/[id]`, no booking dialog. Those are `[[m1.2-buyer-setup]]`.
-9. **Service-role key in the front-end** — never. The barber UI uses the publishable key + RLS; service-role stays in Vercel server env ([[supabase-best-practice]], [[lovable-best-practice]]).
+9. **Service-role key in the front-end** — never. The barber UI uses the publishable key + RLS; service-role stays in Vercel server env ([[supabase-best-practice]]).
 10. **Re-pasting the GitHub token** — it's cached in Secrets Manager from M0; recall it for the push.
+11. **Reaching for Lovable** — don't. **Lovable is M0-only.** M1.1 UI is written directly in the repo, then pushed; Vercel auto-deploys ([[lovable-best-practice]]).
+12. **Stale `types.ts`** — after a migration, regenerate `src/integrations/supabase/types.ts` (Step 3b) or the code-first UI won't type-check against the new tables.
+
+## Cowork push-loop notes (mechanics — read if scripting the deploy)
+
+Two things bite when committing from Cowork; neither is conceptual, both cost time if rediscovered:
+
+1. **Prettier-as-ESLint-errors:** the repo enforces `prettier/prettier` as ESLint **errors**, and some M0-committed files were already prettier-dirty, so a blanket `eslint .` fails out of the box. `npm run format` fixes it but reformats **unrelated** files (including the course skill markdown). **Scope formatting to the files you changed** — don't run a repo-wide format and sweep in noise.
+2. **Cowork outputs mount denies `git` unlink:** the Cowork outputs mount is an overlay FS that **denies the unlink `git` does on tracked files**, so committing directly there is unreliable. **Workaround:** do the git work in a plain `/tmp` clone — copy your changed files over, then `commit` + `push` from the `/tmp` clone.
 
 ## Expected duration
 
-45–70 minutes — most of it in Lovable (the onboarding form with the photo uploader + `/shop/bookings`) and verifying the RLS isolation. The migrations + the Storage bucket + `get_advisors` are fast.
+45–70 minutes — most of it writing the onboarding form (with the photo uploader) + `/shop/bookings` in the repo and verifying the RLS isolation. The migrations + the Storage bucket + type regen + `get_advisors` are fast.
 
 ## Next step
 
-When `m1.1-seller-setup-checklist` is green, tell the student:
-「M1.1 完成了！一個 shop 現在可以上架**多位理髮師**、各自列出服務與價格、上傳作品髮型照、發布可預約的時間窗（時段本身沒有狀態），並在 shop 層級填好撥款銀行帳號，而且 RLS 確保每個人只能改自己的資料、銀行欄位（在 profiles）只有本人和 admin 讀得到、作品照只有本人能上傳但大家都看得到。準備好的話跟我說『啟動 M1.2』，我們來做顧客端：瀏覽所有理髮師、進理髮師詳情頁（含作品照輪播 carousel）、用彈出視窗選服務挑時段下訂（先不收款，金流是 M2.1）。」
-Then load `[[m1.2-buyer-setup]]`.
+When `m1.1-seller-setup-checklist` is green, tell the student (milestone-scoped — celebrate M1.1, don't surface the next milestone):
+「M1.1 完成了！一個 shop 現在可以上架**多位理髮師**、各自列出服務與價格、上傳作品髮型照、發布可預約的時間窗（時段本身沒有狀態），並在 shop 層級填好撥款銀行帳號，而且 RLS 確保每個人只能改自己的資料、銀行欄位（在 profiles）只有本人和 admin 讀得到、作品照只有本人能上傳但大家都看得到。理髮店這一側到這裡就完整了 ✅」
+
+> **Note for Claude Code (author-only — do NOT volunteer to the student):** the next milestone is **M1.2** (the customer side — browse all barbers, a barber detail page with the photo carousel, and a pop-up dialog to pick a service + slot and book, payment-free). When the instructor advances the student (or the student asks "what's next"), load `[[m1.2-buyer-setup]]`. Don't seed M1.2/M2.1 into the student's mental model at the end of M1.1.
 
 ## Reference
 

@@ -1,11 +1,13 @@
 ---
 name: lovable-best-practice
-description: Hard rules and workflow tips for working with Lovable in the 抽成制理髮師預約平台 course. Use whenever a student is generating, re-rolling, or editing the M0 Lovable landing page + role-tab auth — and any later Lovable re-roll of the front-end. Covers not connecting your own Supabase too early (v1 = Lovable Cloud), shipping a clean modern build (avoid the SSR 404 trap), keeping the hair-themed Novara design tokens consistent (serif hero + beige/cream + the 4 marketplace sections, NOT a 3-card hero), the Customer↔Shop role-tab auth UX, capturing role in auth metadata only in M0, PascalCase components, and no secrets in commits. Apply proactively — stop the student before they break one.
+description: Hard rules and workflow tips for working with Lovable in the 抽成制理髮師預約平台 course. **Lovable is used in M0 ONLY** — from M1.1 on the UI is written directly in the repo (code → GitHub → Vercel), so do NOT load this for M1.1+ build work. Use whenever a student is generating, re-rolling, or editing the M0 Lovable landing page + role-tab auth. Covers not connecting your own Supabase too early (v1 = Lovable Cloud), shipping a clean modern build (avoid the SSR 404 trap), keeping the hair-themed Novara design tokens consistent (serif hero + beige/cream + the 4 marketplace sections, NOT a 3-card hero), the Customer↔Shop role-tab auth UX, capturing role in auth metadata only in M0, PascalCase components, and no secrets in commits. Apply proactively — stop the student before they break one.
 ---
 
 # Lovable Best Practice (Barber Booking — the M0 hair-marketplace build)
 
-This skill is loaded any time the student is interacting with Lovable — which in this course is **M0** (the hair-themed landing page + role-tab sign-in) and any later re-roll of the front-end. It lives at two levels:
+> **Scope: M0 ONLY.** This course uses Lovable **only in M0** (the landing page + role-tab auth). **From M1.1 on, the UI is written directly in the repo** (code → GitHub → Vercel auto-deploy) — there is no Lovable in M1.1+. **Do not load or apply this skill for M1.1 or later build work**; if a later milestone's UI needs changing, edit the repo, don't reach for Lovable. (See [[m1.1-seller-setup]]'s "Lovable is M0-only" note.)
+
+This skill is loaded any time the student is interacting with Lovable — which in this course is **M0** (the hair-themed landing page + role-tab sign-in). It lives at two levels:
 
 1. **Hard rules** — non-negotiable. Each has a real incident behind it; skipping one costs the student hours later (or ships a broken deploy / a leaked secret).
 2. **General workflow tips** — Vercel framework-preset gotchas, re-roll discipline, git commit habits.

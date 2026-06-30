@@ -18,12 +18,14 @@ Verifies the student actually completed M1.1 — not just *thinks* they did. Peo
 | A — Barber CRUD | Supabase MCP / SQL editor | **Supabase MCP** (`execute_sql`) — preferred both modes |
 | B — Service CRUD | Supabase MCP / SQL editor | **Supabase MCP** |
 | C — Slot publish | Supabase MCP / SQL editor | **Supabase MCP** |
-| D — RLS cross-barber denial | two browser sessions + Supabase MCP | **Supabase MCP** + a second test account in the live app |
+| D — RLS cross-barber denial | two browser sessions + Supabase MCP | **second test account in the live app** (MCP can't prove this — see below) |
 | E — Role flips to 'shop' | Supabase MCP | **Supabase MCP** |
-| F — Shop-level bank fields (profiles) not world-readable | Supabase MCP + `get_advisors` | **Supabase MCP** + `get_advisors` |
-| G — Sample hairstyle photos | Supabase MCP + Storage | **Supabase MCP** + Storage |
+| F — Shop-level bank fields (profiles) not world-readable | Supabase MCP + `get_advisors` | **Supabase MCP** + `get_advisors` (structural) |
+| G — Sample hairstyle photos | Supabase MCP + Storage | **second test account** for the cross-folder write (see below) |
 
-The reads below run through the **Supabase MCP** (`mcp__claude_ai_Supabase__execute_sql` / `get_advisors`) in both modes — that's the authoritative path. The cross-barber **edit** test (Section D) needs a second logged-in barber in the live app, because RLS only bites under a real `auth.uid()`.
+The reads below run through the **Supabase MCP** (`execute_sql` / `get_advisors`) in both modes — that's the authoritative path. Refer to the MCP tools by their **bare names** (`execute_sql`, `get_advisors`, `list_tables`); this course's connector namespaces them **per session** (e.g. `mcp__<session-id>__execute_sql`), so the literal `mcp__claude_ai_Supabase__…` string won't resolve — call whichever namespaced variant your session exposes.
+
+> ⚠️ **The Supabase MCP runs PRIVILEGED and BYPASSES RLS.** It does **not** execute under a barber's `auth.uid()`, so it **cannot** exercise the behavioral RLS tests (**D1** cross-barber edit, **G3** cross-folder upload): an `execute_sql` UPDATE there neither proves the policy blocks a cross-tenant write nor is itself blocked by it. Via MCP you can only verify **policy *definitions*** (the policy text is scoped to `auth.uid()`) + the advisor. The **behavioral** proof requires a **second account signed into the deployed app** (a real `auth.uid()`). **Never run the destructive `update … set name='HACKED'` from the report through the MCP against real data** — because MCP bypasses RLS, it would actually mutate rows instead of being filtered to 0. Run that attempt only as Barber B inside the live app.
 
 ## How to run
 
@@ -37,6 +39,8 @@ Ask the student for:
 3. Confirm the Supabase MCP is connected to the **barber-platform** project.
 
 ### Step 2: Run the checklist
+
+> **Note for Claude Code:** a single `execute_sql` call with **several `select`s returns only the LAST result set**. When a check has multiple reads, either run them as **separate `execute_sql` calls**, or wrap them in one `json_build_object(...)` / `to_jsonb(...)` so every value comes back in one row. Don't assume all statements' outputs are returned.
 
 #### Section A — Barber CRUD (one shop can run MANY barbers)
 - **A1** Barber A's barber(s) exist with the right shop:
@@ -79,9 +83,22 @@ Ask the student for:
   *Recovery:* re-apply the M1.1 slot migration (build skill Step 6, section B) — a `bookable_slots.status` column means the old model leaked in; drop it. The booking lifecycle lives only on `bookings.status` (M1.2).
 
 #### Section D — RLS denies cross-barber edits (THE DECISIVE TEST)
-- **D1** **Try to edit another barber's barber and confirm it's blocked.** As **Barber B** (logged into the live app, so `auth.uid()` = B), attempt to update **Barber A's** barber / service / slot:
+
+> ⚠️ **This test cannot be done through the Supabase MCP** — the MCP is privileged and bypasses RLS, so a cross-tenant UPDATE there would *mutate real rows* instead of being blocked. The behavioral proof needs **Barber B signed into the deployed app** (a real `auth.uid()`). **Offer to create a second test account** if the student only has one: sign up a second `shop` via `/login`, give it its own barber, then run the attempt below from B's live session (the app's Supabase client, or an MCP call genuinely scoped to B's JWT — *not* the privileged connector). What MCP *can* do here is **D0** (verify the policy definitions structurally).
+
+- **D0 (structural, via MCP)** Confirm the `*_write_own` policies exist and are scoped to `auth.uid()` (this is all the privileged MCP can prove):
   ```sql
-  -- run AS barber B (e.g. via the app, or an MCP call scoped to B's session):
+  select tablename, policyname, cmd, qual, with_check
+  from pg_policies
+  where schemaname = 'public'
+    and tablename in ('barbers','services','bookable_slots')
+    and policyname like '%own%'
+  order by tablename, policyname;
+  ```
+  Expect each write policy's `qual` / `with_check` to reference `auth.uid()` (directly for `barbers`, or via the `exists (… s.shop_id = auth.uid())` sub-select for `services` / `bookable_slots`). A policy that's `using (true)` for `update`/`delete` is the bug. *Recovery:* re-apply the RLS migration (build skill Step 3).
+- **D1 (behavioral, in the live app — the decisive test)** As **Barber B** (logged into the deployed app, so `auth.uid()` = B), attempt to update **Barber A's** barber / service / slot:
+  ```sql
+  -- run AS barber B from B's live session (NOT the privileged MCP connector):
   update public.barbers set name = 'HACKED' where shop_id <> auth.uid();   -- expect: 0 rows
   update public.services set price = 1 where barber_id =
       (select id from public.barbers where shop_id <> auth.uid() limit 1);     -- expect: 0 rows
@@ -89,7 +106,7 @@ Ask the student for:
       (select id from public.barbers where shop_id <> auth.uid() limit 1);     -- expect: 0 rows
   ```
   **Pass = 0 rows affected** on all three (RLS filtered them out) **and** Barber A's data is unchanged when you re-read it. If any row changes → the `*_write_own` policies are missing/too loose. *Recovery:* re-apply the RLS migration (build skill Step 3) and re-run `get_advisors`.
-- **D2** Conversely, Barber B **can** edit B's own barber (RLS shouldn't over-block). A self-update returns 1 row.
+- **D2** Conversely, Barber B **can** edit B's own barber (RLS shouldn't over-block). A self-update from B's live session returns 1 row.
 
 #### Section E — Role flips to 'shop'
 - **E1** A barber account carries `role = 'shop'`:
@@ -112,11 +129,11 @@ Ask the student for:
   where table_schema='public' and table_name='profiles'
     and column_name in ('bank_account_name','bank_account_number');
   ```
-  Then, as a **customer / different barber** (publishable key, so `auth.uid()` ≠ the shop), a read of **another** user's `profiles.bank_account_*` must return **nothing** — the existing `profiles_select_own` RLS scopes a user to their own row, and only `role='admin'` may read across rows. Confirm no public view re-exposes the bank columns, and `get_advisors` shows no RLS-disabled / leaking finding:
+  Then, as a **customer / different barber** (publishable key, so `auth.uid()` ≠ the shop), a read of **another** user's `profiles.bank_account_*` must return **nothing** — the existing `profiles_select_own` RLS scopes a user to their own row, and only `role='admin'` may read across rows. (Like D1, the *behavioral* cross-row read needs a real non-shop `auth.uid()` in the live app — the privileged MCP bypasses RLS. Via MCP, verify the policy text + advisor.) Confirm no public view re-exposes the bank columns, and the `get_advisors` tool shows no RLS-disabled / leaking finding:
   ```text
-  mcp__claude_ai_Supabase__get_advisors  →  type: "security"
+  get_advisors  →  type: "security"
   ```
-  Expect RLS enabled on `platform_settings` / `profiles` / `barbers` / `services` / `bookable_slots` and no `rls_disabled_in_public` for them. (A `security_definer_view` note on `barbers_public` is expected — it carries only non-sensitive columns; not a leak.) *Recovery:* build skill Steps 3–4, plus the `profiles` bank-field RLS introduced in m0-landing-page.
+  Expect RLS enabled on `platform_settings` / `profiles` / `barbers` / `services` / `bookable_slots` and no `rls_disabled_in_public` for them. The advisor should be **clean** — in particular **no `security_definer_view` ERROR on `barbers_public`**, because the build skill creates it with `security_invoker = on`. If that ERROR appears, the view was created without `security_invoker` — re-apply the Step 3 view DDL. *Recovery:* build skill Steps 3–4, plus the `profiles` bank-field RLS introduced in m0-landing-page.
 
 #### Section G — Sample hairstyle photos (portfolio)
 - **G1** The `barber_photos` table exists with the right shape and Barber A has at least one photo row:
@@ -133,7 +150,12 @@ Ask the student for:
     and policyname like 'barber_photos%';                                            -- read + write_own
   ```
   *Recovery:* build skill Step 3a (create the bucket + Storage policies).
-- **G3** **A barber cannot write into another barber's photo folder** — as **Barber B**, an upload under Barber A's `<barberA_id>/...` prefix is rejected by the Storage policy (the public bucket is read-only to non-shops). Confirm the path convention `<barber_id>/...` is enforced. *Recovery:* the `barber_photos_write_own` Storage policy (Step 3a).
+- **G3** **A barber cannot write into another barber's photo folder.** Like D1, this is **behavioral and cannot be proven via the privileged MCP** (which bypasses Storage RLS) — it needs **Barber B signed into the live app**. As **Barber B**, an upload under Barber A's `<barberA_id>/...` prefix must be **rejected** by the Storage policy (the public bucket is read-only to non-shops). Via MCP you can only confirm the policy *definition* — that `barber_photos_write_own` exists and keys on `split_part(name,'/',1)` against an owned barber:
+  ```sql
+  select policyname, cmd, qual from pg_policies
+  where schemaname='storage' and tablename='objects' and policyname='barber_photos_write_own';
+  ```
+  *Recovery:* the `barber_photos_write_own` Storage policy (Step 3a). *(Offer to create a second test account if the student doesn't have Barber B yet.)*
 
 ## Reporting
 
@@ -144,16 +166,18 @@ Emit a table:
 | A1 barber exists + correct shop | ✅ / ❌ | |
 | A2 shop can run MANY barbers (shop_id NOT unique + index) | ✅ / ❌ | a 2nd barber per shop is valid |
 | B1 service CRUD (category + whole-unit price) | ✅ / ❌ | `price` in platform_settings.currency, NOT ×100 |
-| C1 slot publish (time window — NO status column) | ✅ / ❌ | `id, barber_id, starts_at, ends_at, created_at`; availability derived in M1.2 |
-| D1 RLS denies cross-barber edit | ✅ / ❌ | **the decisive test — 0 rows changed** |
+| C1 slot publish (time window — NO status column) | ✅ / ❌ | `id, barber_id, starts_at, ends_at, created_at`; availability derived later |
+| D0 `*_write_own` policies scoped to `auth.uid()` (structural, MCP) | ✅ / ❌ | policy text — all MCP can prove |
+| D1 RLS denies cross-barber edit (behavioral, live app) | ✅ / ⚠️ / ❌ | **the decisive test — 0 rows changed; ⚠️ if no 2nd account to run it** |
 | D2 shop can edit own rows | ✅ / ❌ | RLS not over-blocking |
 | E1 role flips to 'shop' | ✅ / ❌ | never `admin` |
 | F1 `barbers` has no bank columns (moved to `profiles`) | ✅ / ❌ | bank is shop-level now |
 | F2 `profiles` bank fields shop+admin-only + advisor clean | ✅ / ⚠️ / ❌ | get_advisors security |
 | G1 `barber_photos` table + a photo row (path + is_featured) | ✅ / ⚠️ / ❌ | portfolio + M4 input |
 | G2 `barber-photos` bucket public-read + shop-write policy | ✅ / ❌ | |
-| G3 barber can't write into another's photo folder | ✅ / ❌ | `<barber_id>/` prefix enforced |
+| G3 barber can't write into another's photo folder (behavioral, live app) | ✅ / ⚠️ / ❌ | `<barber_id>/` prefix enforced; ⚠️ if no 2nd account to run it |
 
-**Verdict:**
-- All ✅ → 「M1.1 驗收通過 ✅ READY for M1.2。理髮店能開（多位）理髮師、列服務、發布可預約時段（時段就是一段時間窗、沒有 status 欄位，可預約與否在 M1.2 由 live booking 推導），RLS 也擋住了跨理髮師的竄改、店家層級的銀行欄位（在 `profiles`）沒有外洩。跟我說『啟動 M1.2』，我們來做顧客瀏覽與彈出視窗預約。」
-- Any ❌ → list the failed items + the recovery step, and tell the student to fix then re-run `驗收 M1.1`. **If D1 or F2 failed, treat it as blocking** — a cross-barber edit getting through or a leaking bank field is a security hole, not a cosmetic miss; fix the RLS migration (build skill Steps 3–4) before proceeding to M1.2.
+**Verdict** (milestone-scoped — celebrate M1.1, don't surface the next milestone to the student):
+- All ✅ → 「M1.1 驗收通過 ✅ 理髮店這一側完整了：能開（多位）理髮師、列服務、發布可預約時段（時段就是一段時間窗、沒有 status 欄位，可預約與否由有沒有人預約推導），RLS 也擋住了跨理髮師的竄改、店家層級的銀行欄位（在 `profiles`）沒有外洩。」
+  > **Note for Claude Code (author-only — do NOT volunteer to the student):** when the instructor advances the student, the next milestone is **M1.2** (`[[m1.2-buyer-setup]]`, the customer browse + pop-up booking flow). Don't print "啟動 M1.2" or describe M1.2 in the success message.
+- Any ❌ → list the failed items + the recovery step, and tell the student to fix then re-run `驗收 M1.1`. **If D1 or F2 failed, treat it as blocking** — a cross-barber edit getting through or a leaking bank field is a security hole, not a cosmetic miss; fix the RLS migration (build skill Steps 3–4) before the milestone is considered done. **A D1/G3 that's only ⚠️ (no second account available to run the behavioral test) is NOT a pass** — D0's structural check plus a clean advisor is *necessary but not sufficient*; offer to create the second account and run the real attempt before declaring those green.

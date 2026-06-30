@@ -34,7 +34,7 @@ The three things you confirm here are what M1.1 builds on:
 
 M1.1 gates every barber surface on `profiles.role`, so confirm the M0 seam still works **before** building on it.
 
-**1a — `profiles` exists and carries a role.** Via the Supabase MCP (`mcp__claude_ai_Supabase__execute_sql`):
+**1a — `profiles` exists and carries a role.** Via the Supabase MCP **`execute_sql`** tool:
 ```sql
 select id, email, role from public.profiles order by created_at desc limit 5;
 ```
@@ -56,14 +56,15 @@ where t.relname = 'profiles' and c.contype = 'c';
 
 ## Step 2 — Supabase MCP is reachable (the migration + advisor path)
 
-M1.1 applies schema and RLS through the Supabase MCP. Confirm the connector can actually reach the student's project — one read is enough:
+M1.1 applies schema and RLS through the Supabase MCP. Confirm the connector can actually reach the student's project — one read is enough (call the **`list_tables`** tool):
 ```text
-mcp__claude_ai_Supabase__list_tables   →  should list at least public.profiles
+list_tables   →  should list at least public.profiles
 ```
+> **Tool names:** this course's Supabase MCP namespaces its tools **per session** (e.g. `mcp__<session-id>__list_tables`), so a hard-coded `mcp__claude_ai_Supabase__…` string won't resolve. Refer to the tools by their bare names — `list_tables`, `execute_sql`, `apply_migration`, `get_advisors`, `generate_typescript_types` — and call whichever namespaced variant your session exposes.
 - Returns the table list (you should see `profiles`) → ✅ the Supabase Connector is wired to the right project (the one M0 swapped auth onto).
 - **Auth error / wrong project / empty** → the Supabase Connector isn't installed or points at a different org/project. Have the student re-install it (Cowork → Connectors → **Supabase Connector**) and pick the **barber-platform** project from M0, then re-run.
 
-> **Note for Claude Code:** also confirm `mcp__claude_ai_Supabase__get_advisors` is callable (you'll run it in M1.1 Step 4 after the RLS migration). If `list_tables` works, the advisor will too — they're the same connector. Don't apply any migration in this prereq; M1.1 owns the schema.
+> **Note for Claude Code:** also confirm the **`get_advisors`** tool is callable (you'll run it in M1.1 Step 4 after the RLS migration). If `list_tables` works, the advisor will too — they're the same connector. Don't apply any migration in this prereq; M1.1 owns the schema.
 
 ---
 

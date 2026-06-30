@@ -143,7 +143,7 @@ create policy "shops_owner_write" on public.barbers for all
 
 - **Multiple barbers/staff per barber / per-staff attribution + in-barber revenue split** — the course models one SHOP that may run many barbers and pays the shop; it does not split *within* a barber (Rule 5).
 - **Column-level encryption of bank fields / Supabase Vault for app data** — the shop's `profiles` bank columns are plain columns gated by RLS (shop + admin); field-level crypto is a prod hardening pass. (Vault's role in *this* course is discussed in [[aws-secrets-best-practice]], and it's not used for app data.)
-- **The simultaneous-click slot race** (DB-level locking / `select … for update` on a slot) — deferred until ~1,000 concurrent customers/barber; "first to pay wins" is sufficient. See [[m1.2-buyer-booking]].
+- **The simultaneous-click slot race** (DB-level locking / `select … for update` on a slot) — deferred until ~1,000 concurrent customers/barber; "first to pay wins" is sufficient. See [[m1.2-buyer-setup]].
 - **Read replicas / connection pooling tuning / PITR** — course runs at tens-of-rows scale.
 
 When a student asks "shouldn't we encrypt the bank field / handle the slot race?" → "Yes, for production. The course optimizes for the minimum correct multi-tenant data model with RLS as the boundary; the rest is a hardening pass once the milestones are stable."
@@ -152,7 +152,7 @@ When a student asks "shouldn't we encrypt the bank field / handle the slot race?
 
 ## Cross-references
 
-- [[m1.1-barber-shop-and-schedule]] — where `barbers`/`services`/`bookable_slots` + their RLS (Rules 2, 3, 5) are introduced, a shop can create MANY barbers, and the shop-level "payout settings" write the bank fields to `profiles`.
+- [[m1.1-seller-setup]] — where `barbers`/`services`/`bookable_slots` + their RLS (Rules 2, 3, 5) are introduced, a shop can create MANY barbers, and the shop-level "payout settings" write the bank fields to `profiles`.
 - [[m2.2-admin-to-seller-payment]] — the flexible per-shop `payouts` batches + the `owed_bookings` view, no-double-pay on `bookings.payout_id` (Rule 5), and the admin-only read of the shop's `profiles` bank fields (Rule 3).
 - [[m2.1-buyer-to-admin-payments-prerequisites]] — the admin promotion done as a migration (Rule 1).
 - [[m0-landing-page]] — the `profiles.role` stub these tables gate on.
