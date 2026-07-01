@@ -149,7 +149,9 @@ select to_regclass('public.bookings')           as bookings,
        to_regclass('public.bookings_with_start')  as bookings_with_start;
 ```
 - All three return **NULL** → ✅ clean slate; M1.2 Step 1 creates them fresh.
-- One already exists (a partial earlier M1.2 run) → read its columns and tell the student. The M1.2 migration uses `create table if not exists`, so it's safe to re-run, but confirm the shape matches the current model (**no `start_slot_id` / `slot_id` / `barber_id` on `bookings`**; a `UNIQUE(slot_id)` on `booking_slots`) before layering the UI, so an old denormalized model doesn't leak forward.
+- One or more **already exists** (a partial earlier run) → read its columns and tell the student. The M1.2 migration uses `create table if not exists`, so it's safe to re-run, but confirm the shape matches the current model (**no `start_slot_id` / `slot_id` / `barber_id` on `bookings`**; a `UNIQUE(slot_id)` on `booking_slots`) before layering the UI, so an old denormalized model doesn't leak forward.
+
+> **Prereq scope note:** this prereq deliberately does **static** checks only — table/column/constraint shape and expected seed data (Steps 1–4). It does **not** call `create_booking` or any function. **Function-call verification** (the live, rolled-back `create_booking` smoke test that catches a broken RPC even when the schema looks right) lives in the **`[[m1.2-buyer-setup-checklist]]`** (check A3a), which runs *after* the build creates that function — that's the right home for behavioral proofs.
 
 ---
 

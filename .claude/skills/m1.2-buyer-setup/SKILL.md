@@ -17,7 +17,7 @@ By the end the student has:
 4. A **`/barbers` browse page** — a **marketplace-style responsive card grid** (navbar + a wall of product-style cards) where each card shows a rep photo from `barber_photos`, with search + a category filter (cut / color / perm / beard).
 5. A **`/barbers/[id]` detail page** — laid out like a **marketplace product-detail page**: a top **hairstyle photo carousel** (main image + prev/next + thumbnail/dot nav + click-to-zoom), then the barber profile info + services + **available** slots + a **Book** button. (`[id]` is a uuid/int barber id, so this public detail route coexists fine with the barber-management routes `/shop/bookings` and `/shop/earnings`.)
 6. The **booking pop-up dialog UX** — Book opens a MODAL (**service first → date → slot**; price shown before confirm), the customer **stays on `/barbers/[id]`**, and on confirm it creates the `pending_payment` booking, closes the dialog, and **returns to `/barbers/[id]` with a toast**. No full-page navigation.
-7. A **`/bookings` page** — the customer's personal "my bookings" list with status.
+7. A **`/bookings` page** — the customer's personal "my bookings" list with status, **including a Cancel action** on each live booking (`update bookings set status='cancelled'`; the `trg_free_slots_on_cancel` trigger frees the held slots — the client must NOT delete `booking_slots` itself). Cancel is **in scope for M1.2**, not deferred.
 
 **Out of scope for M1.2:** Stripe Checkout and any real payment; the `paid` transition (and `paid_at` being stamped); the month-end split (M2.2); the success page `/bookings/success`; the admin payout page. Those are M2.1 and M2.2. In M1.2 a booking ends at `pending_payment` with `paid_at=NULL` and `payout_id=NULL` — and that is complete.
 
@@ -42,6 +42,10 @@ This milestone runs in **Cowork on Desktop**, same as M0/M1.1. The two backend t
 | Apply the `bookings` migration + RLS | Supabase MCP `apply_migration` | same MCP call, or `supabase db push` against your migration file |
 | Verify a booking row / slot availability | Supabase MCP `execute_sql` | `psql` / Supabase SQL editor |
 | Build the buyer pages + dialog | Claude Code edits the repo, pushes to `main` (recall the GitHub PAT from Secrets Manager `barber-project/github`) | `git push` with a locally-authed `gh` |
+
+**Delivery default — push straight to `main`, Vercel auto-deploys.** The M1.2 buyer UI is committed directly to `main`; Vercel auto-deploys to production on push using the cached GitHub PAT. **No feature-branch / PR step by default** (consistent with the no-Lovable-after-M0 workflow — from M1.1 on the UI is written in the repo). Don't ask the student which delivery model to use; this is it.
+
+> **Note for Claude Code (env gotcha):** if the working tree is a **Cowork connected-folder / outputs mount**, git may fail to `unlink` `.git` objects (the mount denies it), so `git commit`/`push` can't run in place. Workaround: `git clone` the repo into a plain `/tmp` dir, write the source files there, and commit + push from `/tmp` (PAT recalled from Secrets Manager). The Supabase MCP tool namespace is also session-specific (e.g. `mcp__<session-id>__…`), not the literal `mcp__claude_ai_Supabase__…` — call whichever variant your session exposes.
 
 All Supabase changes go through a **migration file / `apply_migration`** — never a raw ad-hoc `UPDATE`/`INSERT` against prod ([[supabase-best-practice]]).
 
@@ -230,8 +234,17 @@ Also run `get_advisors` and confirm no "RLS disabled" / "policy missing" warning
 create or replace function public.create_booking(p_service_id uuid, p_start_slot_id uuid)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare
+  -- ⚠️ ALL variables live in this ONE top-level declare — including the loop
+  -- vars (v_slots / v_prev_end / v_count). Do NOT put them in a nested
+  -- `declare … begin … end` block: a variable declared in a nested block goes
+  -- OUT OF SCOPE the moment that block closes, so referencing v_count in the
+  -- `if v_count <> v_n` check AFTER the loop block raises
+  -- `column "v_count" does not exist` and the RPC is 100% broken (0 bookings).
+  -- (This exact scope bug shipped once and made booking silently fail — keep
+  -- everything flat.)
   v_barber_id uuid; v_n int; v_price int; v_start timestamptz;
   v_slot_ids uuid[]; v_booking_id uuid;
+  v_slots record; v_prev_end timestamptz; v_count int := 0;
 begin
   -- service price snapshot + required_slots, and the barber the start slot belongs to
   select s.price, s.required_slots, sl.barber_id, sl.starts_at
@@ -248,26 +261,23 @@ begin
   -- N := service.required_slots (NOT ceil(duration/30) — services use required_slots directly).
 
   -- Grab the next N slots for this barber starting AT the chosen start slot, in time order.
-  declare v_slots record; v_prev_end timestamptz; v_count int := 0;
-  begin
-    v_slot_ids := array[]::uuid[];
-    for v_slots in
-      select id, starts_at, ends_at from public.bookable_slots
-      where barber_id = v_barber_id and starts_at >= v_start
-      order by starts_at
-      limit v_n
-    loop
-      -- CONTIGUITY: every slot after the first must start exactly where the previous ended
-      -- (no gap in the published schedule). This is what guarantees a multi-slot service
-      -- is fulfilled by N back-to-back windows, not slots scattered across the day.
-      if v_count > 0 and v_slots.starts_at <> v_prev_end then
-        raise exception 'this service needs % back-to-back slots from that start time, but the barber has a gap', v_n;
-      end if;
-      v_slot_ids := v_slot_ids || v_slots.id;
-      v_prev_end := v_slots.ends_at;
-      v_count := v_count + 1;
-    end loop;
-  end;
+  v_slot_ids := array[]::uuid[];
+  for v_slots in
+    select id, starts_at, ends_at from public.bookable_slots
+    where barber_id = v_barber_id and starts_at >= v_start
+    order by starts_at
+    limit v_n
+  loop
+    -- CONTIGUITY: every slot after the first must start exactly where the previous ended
+    -- (no gap in the published schedule). This is what guarantees a multi-slot service
+    -- is fulfilled by N back-to-back windows, not slots scattered across the day.
+    if v_count > 0 and v_slots.starts_at <> v_prev_end then
+      raise exception 'this service needs % back-to-back slots from that start time, but the barber has a gap', v_n;
+    end if;
+    v_slot_ids := v_slot_ids || v_slots.id;
+    v_prev_end := v_slots.ends_at;
+    v_count := v_count + 1;
+  end loop;
   if v_count <> v_n then
     raise exception 'not enough consecutive slots from that start time for this service (needs %)', v_n;
   end if;
@@ -305,6 +315,10 @@ create trigger trg_free_slots_on_cancel
 ```
 
 > **Note for Claude Code:** the **whole booking write is the RPC `create_booking`** — one transaction, so a half-held booking can never exist. The booking is created at `status='pending_payment'` (the default) — **that is M1.2's terminal state; don't set it to `paid`**. **N = `service.required_slots`** (read it straight off the service — NOT `ceil(duration/30)`; services carry no minutes). The `UNIQUE(slot_id)` on `booking_slots` is the entire no-double-book mechanism: if any of the N slots is already held, the insert raises `unique_violation` and the booking is rolled back; surface that as "those times were just taken". Don't engineer row-locks/retries (deferred until ~1,000 concurrent customers/barber). The **free-on-cancel trigger** is what makes a cancelled booking release its slots, so the plain `UNIQUE` correctly means "one *live* booking per slot".
+>
+> ⚠️ **Declare every PL/pgSQL variable at the top level — never in a nested block, then smoke-test the RPC before building any UI.** This function shipped once with `v_count`/`v_slots`/`v_prev_end` declared inside a nested `declare … begin … end` around the loop; those variables went out of scope when the block closed, so the post-loop `if v_count <> v_n` raised `column "v_count" does not exist` and **booking was 100% broken while the schema looked perfectly correct**. A "schema looks right" check does **not** prove the RPC runs. **The moment the migration applies, call it once and roll back** — as a real logged-in customer (so `auth.uid()` is set), e.g. `begin; select public.create_booking('<service>','<start_slot>'); rollback;` — and confirm it returns a booking id, not an error. Only then wire the UI.
+>
+> ⚠️ **Regenerate the Supabase TypeScript types right after this migration.** The generated `src/integrations/supabase/types.ts` is still at the M1.1 shape and knows nothing about `bookings` / `booking_slots` / `bookings_with_start` / `create_booking` — so every buyer-side typed query would resolve to `never`. Run `generate_typescript_types` (the MCP tool) and commit the result **before** building the pages. (A `vite build` uses esbuild and won't type-check, so wrong types won't *fail* the deploy — they'll just silently mistype every query; regenerate anyway.)
 
 ---
 
@@ -374,6 +388,7 @@ This is the signature interaction of M1.2. **The customer never leaves `/barbers
 > 1. 客人按 **Book** → 彈出一個 modal（**頁面不跳轉，背景仍是 `/barbers/[id]`**）。
 > 2. modal 裡讓客人選：**服務（service，決定價格與長度）** → **日期** → 該日期下的**可選「開始時段」**。先選服務，因為（a）價格來自 `service.price`、（b）服務要佔幾個時段：**N = service.required_slots**（時段長度是 `platform_settings.slot_minutes`，目前 30 分鐘）。選好服務後把**價格清楚顯示在 modal 上**（整數，幣別由 `platform_settings.currency` 決定）。
 > 3. **可選的「開始時段」要過濾**：只有「它自己＋後面連續 N−1 個時段都還沒被佔用」的時段，才能當開始時間（例如 `required_slots=3` 的燙髮，就只列出後面有連續 3 個空檔的開始時間）。判斷「被佔用」用 anti-join：該時段沒有任何 `booking_slots` 指到它。
+> 3a. **多時段服務要把「整段」畫出來（N > 1 時很重要）**：客人選了一個開始時段後，若這個服務要佔 N 個時段，就**把那 N 個連續時段整段 highlight 起來**（起始時段加個外框/ring），並在 modal 上顯示一行摘要：「你的預約：18:00–19:30（連佔 3 個時段）」＋一句小字「此服務會連續佔用 N 個時段」。**否則客人只看到起始時段被選中，不知道 90 分鐘的燙髮其實吃掉了三格**（這是真實回報過的困惑）。至於「太接近打烊、後面湊不滿 N 格」的時段，**要嘛完全不顯示（只渲染合法的開始時段），要嘛 dim 掉但一定要加標籤說明「無法從這裡開始（時段不足）」** —— 只把它變灰卻不解釋，會讓客人以為「這格不能約」，可是從更早的時段開始時它其實還是會被佔用，這個矛盾正是混淆的來源。二選一，但務必讓「灰掉的原因」看得懂。
 > 4. modal 底部有 **Confirm** 與 **Cancel**。
 > 5. 按 **Confirm** → 呼叫 Step 2 的 **`create_booking(service_id, start_slot_id)` RPC**（它在一個交易裡建立 `pending_payment` booking ＋ N 筆 `booking_slots`、快照 `price`，**不要改任何時段狀態**）→ **關閉 modal** → **留在 `/barbers/[id]`** → 跳一個成功 toast（中性字樣，因為這個里程碑還不收錢）。若 RPC 因為時段剛被搶走而失敗（`UNIQUE(slot_id)` 衝突），顯示「這些時段剛剛被搶走了，請換一個開始時間」。
 > 6. 那 N 個時段在重新整理後會從可預約清單消失 —— 因為它們現在都有 `booking_slots` 指到，anti-join 會排除它們。
@@ -381,16 +396,21 @@ This is the signature interaction of M1.2. **The customer never leaves `/barbers
 > ⚠️ 這一步**還不要接 Stripe**。這筆預約停在 `pending_payment`（`paid_at` 為 NULL）就是 M1.2 完成的狀態。請把「Confirm」的行為寫得乾淨、可被替換 —— 因為 **M2.1 會把這顆 Confirm 從「只呼叫 `create_booking`」改成「`create_booking` 拿到 `booking_id` 後開 Stripe Checkout」**，付款成功後 webhook 才把 booking 變 `paid` 並蓋上 `paid_at`。
 
 > **Note for Claude Code:** the dialog is a controlled modal over `/barbers/[id]` (shadcn `Dialog`, Radix, etc.). Picking the service fixes **N = service.required_slots** (read it directly — not ceil(duration/30)); only offer **start slots that have N contiguous free slots** after them (a free slot = no `booking_slots` row references it). On confirm: call the **`create_booking` RPC** (it creates the `pending_payment` booking + N `booking_slots` rows in one transaction — **no slot-status flip**, slots have no status), then `close()` the dialog and fire a toast; **do not** `router.push`. The held slots disappear from the available list on the next read because the anti-join excludes any slot with a `booking_slots` row. This "stay on the page" contract is what makes M2.1's swap trivial — M2.1 keeps the same `create_booking` call and just adds "→ create Checkout Session → redirect" after it. Keep the toast payment-neutral in M1.2 since no money moves yet (the booking is complete at `pending_payment`).
+>
+> ⚠️ **Surface the REAL DB error — Supabase returns a `PostgrestError`, not an `Error`.** A `catch (err) { err instanceof Error ? err.message : 'generic' }` will **always** fall to the generic branch for a Supabase RPC failure, because `PostgrestError` is a plain object (`{message, details, hint, code}`), not an `Error` instance. That swallows the exact message `create_booking` raises ("those times were just taken", "…has a gap", etc.) and reduces every failure to "Could not complete the booking." Add a tiny helper — `src/lib/errors.ts#errMessage(err, fallback)` that reads `err?.message` off a PostgrestError-shaped object first — and use it in the dialog **and** the my-bookings/cancel handler. This is what makes a broken RPC (like the B1 scope bug) visible instead of silent.
+>
+> ⚠️ **Timezone caveat — slots are `timestamptz`.** The shop publishes/reads slots in *its* timezone; the customer's browser renders them in the *browser's* timezone, so "the barber's hours" can look shifted between the shop and buyer views (a slot the shop entered as 18:00 may show as a different wall-clock time to a customer in another TZ). Render slot times explicitly and consistently (decide on one display TZ — the barber's, or the browser's — and label it) so the buyer's chips line up with what the shop actually published. Don't slice by `date` off a naive local conversion and accidentally drop or duplicate the boundary slots.
 
 ---
 
 ### Step 6 — Build `/bookings` (my-bookings) → push → run the checklist
 
-> 做 `/bookings` 這個**客人的「我的預約」頁面**：
+> 做 `/bookings` 這個**客人的「我的預約」頁面**（**含取消功能**）：
 >
-> - 列出**目前登入客人自己的**所有 `bookings`（靠 RLS：`auth.uid() = customer_id`），顯示理髮師名稱（透過 `service_id → services.barber_id → barbers` join 取得，`bookings` 本身沒有 `barber_id`）、服務、**起始時間（讀 `bookings_with_start` view 的 `starts_at` —— 即該預約 `booking_slots` 的 `MIN(starts_at)`，`bookings` 沒有 `start_slot_id` 欄位）**、`price`、以及 `status`（M1.2 都會是 `pending_payment`）。
+> - 列出**目前登入客人自己的**所有 `bookings`（靠 RLS：`auth.uid() = customer_id`），顯示理髮師名稱（透過 `service_id → services.barber_id → barbers` join 取得，`bookings` 本身沒有 `barber_id`）、服務、**起始時間（讀 `bookings_with_start` view 的 `starts_at` —— 即該預約 `booking_slots` 的 `MIN(starts_at)`，`bookings` 沒有 `start_slot_id` 欄位）**、`price`、以及 `status`（M1.2 都會是 `pending_payment` 或 `cancelled`）。
 > - 依**起始時間（`bookings_with_start.starts_at`）**排序，最新的在上。
 > - 客人看不到別人的預約（這由 RLS 強制，不是只靠前端過濾）。
+> - **每筆還沒取消的預約，給一顆「取消 / Cancel」按鈕**：按下就 `update public.bookings set status='cancelled' where id = <該筆>`（RLS 保證只能改自己的）。**不要手動去刪 `booking_slots`** —— 資料庫上的 `trg_free_slots_on_cancel` trigger 會在 status 變 `cancelled` 時自動刪掉這筆的 `booking_slots`，那些時段就因為 anti-join 自動釋出、又能被別人約。取消後重新讀清單，該筆顯示 `cancelled`。取消失敗時，用 `errMessage()`（見 Step 5）把真正的 DB 訊息秀出來。
 
 Then have Claude Code **push to `main`** (recall the GitHub PAT from Secrets Manager `barber-project/github` — don't re-paste), let Vercel redeploy, and verify:
 
@@ -415,6 +435,11 @@ Then have Claude Code **push to `main`** (recall the GitHub PAT from Secrets Man
 10. **Weak RLS on `bookings`** — a customer must read/write only their own rows (`auth.uid() = customer_id`); the owning **shop** gets read-only on bookings for its barbers' services via the join `services → barbers` (`b.shop_id = auth.uid()`). Verify with `get_advisors` ([[supabase-best-practice]]).
 11. **Raw ad-hoc SQL against prod** — the `bookings` table and any later change go through a **migration / `apply_migration`**, never a console `INSERT`/`UPDATE`.
 12. **Client-side-only `insert`** — prefer a server route / RPC so the price snapshot runs on the trusted side (Step 2).
+13. **Trusting "schema looks right" instead of calling the RPC** — a green column/constraint check does NOT prove `create_booking` runs (it once shipped with a nested-`declare` scope bug that made booking 100% broken while the schema looked perfect). **Smoke-test the RPC live (rolled back) as a real customer** right after the migration — see the ⚠️ under Step 1c. Declare all PL/pgSQL vars at the top level, never in a nested block.
+14. **Swallowing the real DB error with `err instanceof Error`** — Supabase returns a `PostgrestError` (a plain object, not an `Error`), so `instanceof Error` is always false and the message falls to a generic string. Use an `errMessage()` helper that reads `.message` off the PostgrestError shape (Step 5), or you'll debug blind.
+15. **Assuming an in-app "Become a shop" upgrade button exists** — it doesn't necessarily. M1.1's skill described a customer→shop upgrade control, but it can be removed entirely (a shop comes from the sign-up **Barber** tab or a manual role change). Don't build the buyer header to depend on it, and don't re-introduce it into the customer surface.
+16. **Regenerating `types.ts` late (or never)** — after the `bookings`/`booking_slots` migration, regenerate the Supabase types **before** writing queries, or every buyer-side typed query is `never`-typed (Step 1c ⚠️). `vite build` won't catch it (esbuild, no type-check).
+17. **Ignoring the `timestamptz` timezone shift** — slots are `timestamptz`; the shop's published hours can render at a different wall-clock time in the customer's browser TZ. Pick one display TZ, label it, and don't drop/duplicate boundary slots when slicing by date (Step 5 ⚠️).
 
 ## Expected duration
 

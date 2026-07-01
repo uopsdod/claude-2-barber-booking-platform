@@ -54,7 +54,14 @@ Ask the student for:
   select column_name from information_schema.columns
   where table_schema='public' and table_name='bookings_with_start' order by ordinal_position;
   ```
-  Expect the booking's own columns **plus** `starts_at` and `ends_at` (the `MIN(starts_at)` / `MAX(ends_at)` over the booking's `booking_slots`). *Recovery:* M1.2 Step 1 — create `bookings_with_start` (the view `/bookings` and any sort-by-start read uses instead of a stored column).
+  Expect the booking's own columns **plus** `starts_at` and `ends_at` (the `MIN(starts_at)` / `MAX(ends_at)` over the booking's `booking_slots`). *Recovery:* M1.2 Step 1 — create `bookings_with_start` (the view `/bookings` and any sort-by-start read uses instead of a stored column). Also confirm this view (and any `barbers_public` view) is **`security_invoker`**, so the base tables' RLS still applies through it (a customer reading `bookings_with_start` sees only their own rows, not everyone's):
+  ```sql
+  select c.relname, (select option_value from pg_options_to_table(c.reloptions)
+                     where option_name='security_invoker') as security_invoker
+  from pg_class c join pg_namespace n on n.oid=c.relnamespace
+  where n.nspname='public' and c.relkind='v' and c.relname in ('bookings_with_start','barbers_public');
+  ```
+  Expect `security_invoker = true` on each. A view that is **not** `security_invoker` runs with the *definer's* rights and can leak every customer's bookings past RLS. *Recovery:* recreate the view `with (security_invoker = true)`.
 
 - **A1b** The `booking_slots` join table exists with its **`UNIQUE(slot_id)`** no-double-book guard, and a booking holds **N rows** (N = service.required_slots):
   ```sql
@@ -80,7 +87,26 @@ Ask the student for:
   ```
   Expect, on `bookings`: select/insert/update scoped to `auth.uid() = customer_id`, plus a read-only shop select that **joins through the service** (`exists (select 1 from services sv join barbers b on b.id = sv.barber_id where sv.id = bookings.service_id and b.shop_id = auth.uid())`) — since bookings has no `barber_id`, the shop is reached via the service. On `booking_slots`: a public-select policy (`using (true)`, so the anti-join can read it) + a write policy scoped to the owning booking's customer. *Recovery:* M1.2 Step 1.
 
-- **A3** No advisor warnings on `bookings` / `booking_slots` — run the Supabase MCP `get_advisors` (security) and confirm no "RLS disabled" / "policy missing" on either table. *Recovery:* fix the policy, re-run.
+- **A3** No advisor warnings on `bookings` / `booking_slots` — run the Supabase MCP `get_advisors` (security) and confirm no "RLS disabled" / "policy missing" on either table. *Recovery:* fix the policy, re-run. (Expected NON-issues you can ignore: `create_booking` / `free_slots_on_cancel` flagged `security_definer_function_executable` — they are **intentionally** `SECURITY DEFINER` so the booking RPC can insert past RLS for the logged-in customer and the cancel trigger can delete `booking_slots`; they operate on `auth.uid()` and are callable only by `authenticated`/`anon`. Also `public_bucket_allows_listing` on `barber-photos` is by design.)
+
+- **A3a — SMOKE-TEST `create_booking` LIVE (the decisive backend check — schema inspection is NOT enough).** A green "columns + constraints look right" does **not** prove the RPC runs: it once shipped with its loop variables declared in a nested `declare … begin … end` block, so a post-loop reference raised `column "v_count" does not exist` and **booking was 100% broken while every schema check passed**. So **actually call the function and roll it back**, as a real logged-in customer (the RPC uses `auth.uid()`), via the Supabase MCP `execute_sql`:
+  ```sql
+  -- pick a customer + a bookable start slot, call create_booking, then ROLL BACK so no test row persists:
+  begin;
+  set local role authenticated;
+  select set_config('request.jwt.claims',
+    json_build_object('sub', (select id from public.profiles where role='customer' order by created_at desc limit 1))::text, true);
+  -- a start slot on a barber that has a service, not already held:
+  select public.create_booking(
+    (select sv.id from public.services sv limit 1),
+    (select sl.id from public.bookable_slots sl
+       where sl.starts_at > now()
+         and not exists (select 1 from public.booking_slots bs where bs.slot_id = sl.id)
+       order by sl.starts_at limit 1)
+  ) as new_booking_id;
+  rollback;
+  ```
+  Expect a **non-null `new_booking_id`** returned (then rolled back — no row remains). If it raises `column "v_count" does not exist` (or any error other than a legitimate "not enough consecutive slots" / "just taken"), the RPC is broken. *Recovery:* re-apply `create_booking` with **all** PL/pgSQL variables in one **top-level** `declare` (M1.2 Step 1c — the loop vars must NOT be in a nested block). Regenerate `src/integrations/supabase/types.ts` too if buyer queries type as `never`.
 
 #### Section B — Buyer pages reachable
 
@@ -179,6 +205,25 @@ Do this **in a browser** as **Customer A** on the live site:
   ```
   Expect `slot_bookable = true` for every formerly-held slot after the cancel (and they reappear in the `/barbers/<barber-id>` available list). This proves availability is **derived** from `booking_slots` rows, not stored on the slot or the booking. *Recovery:* the free-on-cancel trigger must DELETE the booking's `booking_slots` rows, and the available list must use the `booking_slots` anti-join (M1.2 Step 1/4).
 
+- **D5 — whole-DB integrity scan (all three counts must be 0-bad).** Beyond the single-booking checks above, confirm the invariants hold across **every** row — one query, three sub-scans:
+  ```sql
+  select
+    -- (1) no slot is held by more than one booking (the UNIQUE(slot_id) guarantee):
+    (select count(*) from (select slot_id from public.booking_slots
+        group by slot_id having count(*) > 1) x)                                  as slots_double_held,
+    -- (2) no booking_slots row is tied to a CANCELLED booking (cancel trigger frees them):
+    (select count(*) from public.booking_slots bs
+        join public.bookings b on b.id = bs.booking_id
+        where b.status = 'cancelled')                                             as orphan_cancelled_slots,
+    -- (3) every ACTIVE (non-cancelled) booking holds EXACTLY its service's required_slots:
+    (select count(*) from public.bookings b
+        join public.services sv on sv.id = b.service_id
+        where b.status <> 'cancelled'
+          and (select count(*) from public.booking_slots bs where bs.booking_id = b.id)
+              <> sv.required_slots)                                               as wrong_slot_count;
+  ```
+  Expect **`0, 0, 0`**. Any non-zero means: (1) the `uniq_slot_held` UNIQUE is missing/dropped, (2) the free-on-cancel trigger didn't fire (a cancelled booking still holds slots), or (3) `create_booking` didn't insert exactly N rows. *Recovery:* re-apply M1.2 Step 1c (the `uniq_slot_held` index, the `trg_free_slots_on_cancel` trigger, and the `create_booking` RPC), then re-run.
+
 ## Reporting
 
 Emit a table:
@@ -189,7 +234,8 @@ Emit a table:
 | A1a `bookings_with_start` view exposes derived `starts_at`/`ends_at` | ✅ / ❌ | MIN/MAX over booking_slots |
 | A1b `booking_slots` join table + `UNIQUE(slot_id)` guard; booking holds N rows | ✅ / ❌ | N = service.required_slots |
 | A2 RLS own-rows policies present (shop read joins through service; booking_slots public-select) | ✅ / ❌ | |
-| A3 no advisor warnings on `bookings`/`booking_slots` | ✅ / ⚠️ / ❌ | |
+| A3 no advisor warnings on `bookings`/`booking_slots` | ✅ / ⚠️ / ❌ | SECURITY DEFINER on the two funcs + public-bucket listing are by-design |
+| A3a **`create_booking` smoke test** returns a booking id (rolled back) | ✅ / ❌ | **decisive** — schema-looks-right ≠ RPC runs; catches the nested-declare scope bug |
 | B1 `/barbers` browse 200 | ✅ / ❌ | |
 | B2 `/barbers/[id]` 200 + no collision w/ `/shop/bookings` | ✅ / ❌ | uuid/int id route |
 | B3 `/bookings` 200 / redirects to login | ✅ / ❌ | |
@@ -204,6 +250,7 @@ Emit a table:
 | D2 no `paid` rows / no `paid_at` yet (pre-payment) | ✅ / ⚠️ / ❌ | M2.1 owns `paid`/`paid_at` |
 | D3 RLS denies reading another customer's bookings | ✅ / ❌ | the key one |
 | D4 cancelling a booking frees its slots (deletes `booking_slots` rows) | ✅ / ❌ | availability is derived, not stored |
+| D5 whole-DB integrity scan = `0,0,0` (no double-held slot / no cancelled-booking slots / every active booking holds exactly N) | ✅ / ❌ | invariants hold across all rows |
 
 **Verdict:**
 - All ✅ → 「M1.2 驗收通過 ✅ READY for M2.1。客人已經能瀏覽、開理髮師詳細頁、用 pop-up dialog 預約，並建立了 `pending_payment` 預約（N 筆 `booking_slots`、bookings 上**沒有 `start_slot_id`／`slot_id`／`barber_id`**，開始時間是從 `booking_slots` 的 `MIN(starts_at)` 推導出來、用 `bookings_with_start` view 讀；`status` 是 `pending_payment | paid | cancelled` 三態、`paid_at` 與 `payout_id` 皆為 NULL——這就是 M1.2 的完整成果，還沒收錢）。時段沒有 status 欄位——可預約與否是用 `booking_slots` 的 anti-join 推導出來的，所以一有預約就自動從可預約清單消失、取消後刪掉 `booking_slots` 又自動釋出；同一個時段的第二筆 hold 會被 `booking_slots` 上的 `UNIQUE(slot_id)`（`uniq_slot_held`）擋掉。RLS 也擋住了別人的預約。跟我說『啟動 M2.1』，我們來接 Stripe：把那顆 Confirm 改成開 Stripe Checkout，付款成功後 webhook 把預約從 `pending_payment` 變 `paid`、蓋上 `paid_at`、誰先付款誰贏得時段；平台 20%／理髮師 80% 拆帳則是月底（M2.2）才從 `paid` 預約推導出來，結算狀態是看 `payout_id`、不是再多一個 booking status。」
