@@ -33,7 +33,7 @@ The student invokes this directly (e.g. types `驗收 M1.2`). You (Claude Code) 
 Ask the student for:
 1. Vercel deploy URL (`https://<app>.vercel.app`)
 2. Supabase project ref (so the MCP targets the right project)
-3. Two test customer logins (Customer A + Customer B) — needed for the RLS-isolation test in D3. (Customer A also needs at least one barber with a published, still-available slot — a slot with no `booking_slots` row referencing it — from M1.1.)
+3. Two test customer logins (Customer A + Customer B) — needed for the RLS-isolation test in D3. (Customer A also needs at least one barber with a published, still-available slot — a slot with no `booking_slots` row referencing it — from M1.1.) These customer accounts are created **during the M1.2 build** (M1.2 is where the customer side is first built), not beforehand. But if the seller side was never **bookable** (no barber with a service + enough future free slots), that's a **prereq** miss, not a build bug — send the student to `[[m1.2-buyer-setup-prerequisite]]` (the bookable-barber check lives there).
 
 ### Step 2: Run the checklist
 

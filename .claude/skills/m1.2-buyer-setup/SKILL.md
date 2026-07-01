@@ -29,6 +29,8 @@ Trigger phrases:
 - "build the buyer booking flow" / "build the booking flow"
 - Any prompt mapping to "客人瀏覽理髮師、開詳細頁、按 Book、選日期時段、建立一筆 pending 預約"
 
+Run **`m1.2-buyer-setup-prerequisite` first** — it confirms M1.1's seller data is real and correctly shaped (`barbers` / `services` with `required_slots` / `bookable_slots` with **no `status` column** / `platform_settings`), that at least one barber is actually bookable (a service + ≥ `required_slots` future free slots), and that `bookings`/`booking_slots` are a clean slate. It does **not** require a customer account to pre-exist — you sign up the `role='customer'` account you book as as the **first act of this build** (M1.2 is where the customer side is first built), so that's a build step here, not a prerequisite.
+
 Do NOT load this for the **barber** side (publishing barbers/services/slots) — that's M1.1 ([[m1.1-seller-setup]]). Do NOT load this to wire **payment** — that's M2.1 ([[m2.1-buyer-to-admin-payments]]).
 
 ## Execution mode (Cowork-first)
@@ -398,6 +400,7 @@ Then have Claude Code **push to `main`** (recall the GitHub PAT from Secrets Man
 
 ## Things to watch out for (common mistakes)
 
+0. **Skipping the prereq** — run `[[m1.2-buyer-setup-prerequisite]]` first. If M1.1's data isn't really there (no barber with a service + enough future free slots), the Book dialog has nothing to offer and you can't smoke-test the flow — you'll build blind against an empty schedule. (The `role='customer'` account you book as is **not** a prereq — you sign it up as the first act of this build; M1.2 is where the customer side is first built.)
 1. **Reading `services.price` later instead of snapshotting it** — always snapshot `price` onto the booking row at creation (Step 1/2). A later price edit must not retroactively change an existing booking or its M2.1 charge.
 2. **`price` × 100** — the default currency (TWD) is **zero-decimal**. Store the whole-unit amount in `platform_settings.currency`; the ×10^minor_units math lives in M2.1's Stripe `unit_amount` (driven by `platform_settings.currency_minor_units`) — see [[m2.1-buyer-to-admin-payments]] / [[stripe-best-practice]].
 3. **Adding a `barber_id` (or `start_slot_id`) column to `bookings`** — there is **none of either**. A booking references **only** `service_id`; its slots (including the first) live in `booking_slots`, and its start time is **derived** as `MIN(starts_at)` over them (via the `bookings_with_start` view). The barber/shop is reached via `bookings → services(barber_id) → barbers(shop_id)`. Don't store `barber_id`, `shop_id`, or `start_slot_id` on the booking, and don't put `barber_id` in M2.1's Stripe metadata as a source of truth.
@@ -429,4 +432,4 @@ Then load `m2.1-buyer-to-admin-payments` (run `m2.1-buyer-to-admin-payments-prer
 - Supabase migrations: https://supabase.com/docs/guides/deployment/database-migrations
 - Postgres `gen_random_uuid()`: https://www.postgresql.org/docs/current/functions-uuid.html
 - shadcn/ui Dialog (modal): https://ui.shadcn.com/docs/components/dialog
-- Cross-skills: [[m1.1-seller-setup]] · [[m2.1-buyer-to-admin-payments]] · [[supabase-best-practice]] · [[lovable-best-practice]]
+- Cross-skills: [[m1.2-buyer-setup-prerequisite]] · [[m1.2-buyer-setup-checklist]] · [[m1.1-seller-setup]] · [[m2.1-buyer-to-admin-payments]] · [[supabase-best-practice]] · [[lovable-best-practice]]
