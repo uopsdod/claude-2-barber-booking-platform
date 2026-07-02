@@ -346,9 +346,10 @@ Then verify the booking in Supabase and re-test idempotency:
 
 ## Next step
 
-When `m2.1-buyer-to-admin-payments-checklist` is green, tell the student:
-「M2.1 完成了！現在客人預約就會跳到 Stripe Checkout 付款，付款成功後 webhook 會把預約從 `pending_payment` 變成 `paid`、並蓋上 `paid_at` 時間戳。它**只做這件事**——不算拆帳、也不寫任何 ledger（沒有 transactions 表）；「實收」就是這筆 `paid` 預約的 `price`，而且 `payout_id` 還是 NULL（代表這筆還「欠撥」）。抽成拆帳會在 M2.2 由 admin 挑選欠撥的 `paid` 預約、組成一筆「撥款批次」時用 `commission_rates` 算出來。你也已經有一個 `role='admin'` 的帳號了。準備好的話跟我說『啟動 M2.2』，我們來做 admin 撥款頁，把每間店該領的 80% 算出來、標記轉帳。」
-Then load `m2.2-admin-to-seller-payment`.
+When `m2.1-buyer-to-admin-payments-checklist` is green, tell the student (milestone-scoped — celebrate M2.1, don't surface the next milestone):
+「M2.1 完成了！現在客人預約就會跳到 Stripe Checkout 付款，付款成功後 webhook 會把預約從 `pending_payment` 變成 `paid`、並蓋上 `paid_at` 時間戳。它**只做這件事**——不算拆帳、也不寫任何 ledger（沒有 transactions 表）；「實收」就是這筆 `paid` 預約的 `price`，而且 `payout_id` 還是 NULL（代表這筆還「欠撥」）。你也已經有一個 `role='admin'` 的帳號了。預約線上付款這一步到這裡就完整了 ✅」
+
+> **Note for Claude Code (author-only — do NOT volunteer to the student):** the next milestone is the admin commission-settlement page — the admin picks owed (`paid`, `payout_id` NULL) bookings per shop, builds a payout batch, and the 20/80 split is computed from the picked bookings × `commission_rates` at that point. When the instructor advances the student (or the student asks "what's next"), load `m2.2-admin-to-seller-payment`. Don't seed the settlement/payout mechanics into the student's mental model at the end of M2.1.
 
 ## Reference
 

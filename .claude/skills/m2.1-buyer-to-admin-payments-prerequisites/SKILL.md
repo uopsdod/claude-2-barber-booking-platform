@@ -1,6 +1,6 @@
 ---
 name: m2.1-buyer-to-admin-payments-prerequisites
-description: One-time setup before Milestone 2.1 of the barber booking platform — an INTERACTIVE, agent-driven walkthrough with TWO parts. (1) Connect a Stripe SANDBOX account via the Stripe MCP / CLI and verify `livemode:false` (the consent page defaults to LIVE — you must switch to sandbox), then put its `STRIPE_SECRET_KEY` (`sk_test_…`) in Vercel env — all the pre-code Stripe setup lives here, not in the build (the build's Step 3 only confirms it; `STRIPE_WEBHOOK_SECRET` is created later in build Step 8). (2) Promote ONE existing account to `role='admin'` — there is no public admin sign-up; the person signs up normally via /login, you find them with SELECT id,email,role FROM profiles, and promote them with a ONE-OFF Supabase migration (UPDATE public.profiles SET role='admin') applied via `mcp__claude_ai_Supabase__apply_migration`. Admin lives in THIS prereq because admin only matters once payment exists (M2.2 consumes it). Use when the student starts M2.1, says "啟動 M2.1 的前置作業", "set up Stripe sandbox", "connect Stripe", "put the Stripe secret key in Vercel", "promote my admin user", "create an admin account", or when `m2.1-buyer-to-admin-payments` / `-checklist` detects Stripe isn't connected or no admin exists.
+description: One-time setup before Milestone 2.1 of the barber booking platform — an INTERACTIVE, agent-driven walkthrough with TWO parts. (1) Connect a Stripe SANDBOX account via the Stripe MCP / CLI and verify `livemode:false` (the consent page defaults to LIVE — you must switch to sandbox), then put its `STRIPE_SECRET_KEY` (`sk_test_…`) in Vercel env — all the pre-code Stripe setup lives here, not in the build (the build's Step 3 only confirms it; `STRIPE_WEBHOOK_SECRET` is created later in build Step 8). (2) Promote ONE existing account to `role='admin'` — there is no public admin sign-up; the person signs up normally via /login, you find them with SELECT id,email,role FROM profiles, and promote them with a ONE-OFF Supabase migration (UPDATE public.profiles SET role='admin') applied via `mcp__claude_ai_Supabase__apply_migration`. Admin lives in THIS prereq because admin only matters once payment exists (the later payout/settlement work consumes it). Two things need a MANUAL confirmation from the student: (a) WHICH email to promote to admin, and (b) that `STRIPE_SECRET_KEY` is saved in Vercel. Use when the student starts M2.1, says "啟動 M2.1 的前置作業", "set up Stripe sandbox", "connect Stripe", "put the Stripe secret key in Vercel", "promote my admin user", "create an admin account", or when `m2.1-buyer-to-admin-payments` / `-checklist` detects Stripe isn't connected or no admin exists.
 ---
 
 # M2.1 Prerequisites — Stripe sandbox + promote your admin user (the agent drives)
@@ -12,10 +12,14 @@ This prereq does **two** things, and only two:
 1. **Connect a Stripe SANDBOX account** (verify you're really in sandbox, `livemode:false`) and **put its `STRIPE_SECRET_KEY` in Vercel env** — all the pre-code Stripe setup lives here.
 2. **Promote one existing account to `role='admin'`** via a one-off migration.
 
-> **Why admin lives in THIS prereq (not M2.2).** The `admin` role only becomes *meaningful once money exists* — an admin's entire job is the month-end payout reconciliation, which needs paid bookings to reconcile. So the course promotes the admin here, in the payment milestone, right before M2.2's `/admin/payouts` page consumes it. There is **no public "sign up as admin" UI** — promotion happens exactly once, through a migration *you* run, which is also why a user can never self-escalate.
+> **Two manual confirmations the student MUST give you.** Everything else you do yourself, but two things depend on a human decision/action you can't perform:
+> - **Which email to promote to admin** — you can't guess it; ask, then promote exactly that one account (Part B).
+> - **That `STRIPE_SECRET_KEY` is saved in Vercel** — Vercel MCP doesn't manage env vars, so you can't set or read it; the student pastes it in the dashboard and confirms (A4).
+
+> **Why admin lives in THIS prereq.** The `admin` role only becomes *meaningful once money exists* — an admin's entire job is the month-end payout reconciliation, which needs paid bookings to reconcile. So the course promotes the admin here, in the payment milestone, right before the settlement work consumes it. There is **no public "sign up as admin" UI** — promotion happens exactly once, through a migration *you* run, which is also why a user can never self-escalate.
 
 **Opening line to the student (say something like):**
-> "M2.1 needs two bits of setup before we wire payments: first I'll connect your **Stripe sandbox** account (test mode — no real money), then we'll **promote one account to admin** so the month-end payout page in M2.2 has someone to gate to. Two parts, one at a time. Let's start with Stripe."
+> "M2.1 needs two bits of setup before we wire payments: first I'll connect your **Stripe sandbox** account (test mode — no real money), then we'll **promote one account to admin**. I'll need two things from you: which email should become the admin, and a quick confirmation that your Stripe secret key is saved in Vercel. Two parts, one at a time. Let's start with Stripe."
 
 ---
 
@@ -23,7 +27,7 @@ This prereq does **two** things, and only two:
 
 ### A1 — Make sure the student has a Stripe account
 
-> "Do you have a Stripe account? If not, sign up free at https://dashboard.stripe.com/register — you do **not** need to activate the account or submit business details for sandbox/test mode. We only go live (real cards) much later, in `[[stripe-go-live]]`."
+> "Do you have a Stripe account? If not, sign up free at https://dashboard.stripe.com/register — you do **not** need to activate the account or submit business details for sandbox/test mode. Going live with real cards is a separate, much-later step."
 
 No activation needed for sandbox. Wait for a yes before connecting.
 
@@ -48,11 +52,11 @@ Don't trust the consent screen — **prove** it. Make any read call through the 
 - Cowork: ask the Stripe MCP to list a couple of recent objects (e.g. balance / a test charge) and check the `livemode` field on the response.
 - CLI: `stripe balance retrieve` → the account/object shows test-mode; `stripe config --list` shows the test key in use.
 
-> **Note for Claude Code:** if anything reads `livemode: true` or you see an `sk_live_…`, **stop** — you're on the live account. Re-authenticate and pick the sandbox account. Going live (new `pk_live_`/`sk_live_` keys + a new webhook endpoint on the custom domain) is a separate, later step: [[stripe-go-live]].
+> **Note for Claude Code:** if anything reads `livemode: true` or you see an `sk_live_…`, **stop** — you're on the live account. Re-authenticate and pick the sandbox account. Going live (new `pk_live_`/`sk_live_` keys + a new webhook endpoint on the custom domain) is a separate, later step handled well after this milestone.
 
-### A4 — Put the sandbox `STRIPE_SECRET_KEY` in Vercel env
+### A4 — Put the sandbox `STRIPE_SECRET_KEY` in Vercel env  ← manual confirmation #2
 
-Now that sandbox is connected, stash its secret key in Vercel so M2.1's build has it ready — this is a pure "copy the key into env" action with no dependency on any M2.1 code, so it belongs here with the rest of the Stripe setup (not in the build). It's a **manual dashboard step** (Vercel MCP does not manage env vars in 2026):
+Now that sandbox is connected, stash its secret key in Vercel so M2.1's build has it ready — this is a pure "copy the key into env" action with no dependency on any M2.1 code, so it belongs here with the rest of the Stripe setup (not in the build). **This is the second of the two things the student does by hand:** Vercel MCP does not manage env vars in 2026, so you can't set or read it — the student pastes it in the dashboard and confirms back to you.
 
 > 到 Stripe dashboard，**確認右上角在 sandbox / test mode**（A2/A3 已切過），Developers → API keys → 複製 **Secret key**（`sk_test_…`）。
 > 然後到 **Vercel → Settings → Environment Variables**，新增 `STRIPE_SECRET_KEY = sk_test_…`（Production scope），存檔。之後任何新環境變數生效都要 **redeploy** 一次。
@@ -67,11 +71,11 @@ This is an **app-runtime key → Vercel env, NOT AWS Secrets Manager** ([[aws-se
 
 The barber platform has three roles — `customer`, `shop`, `admin`. M0's sign-up tab only ever writes `customer` or `shop`; **`admin` is never self-served.** You promote exactly one account, once, by running a migration. Here's the full sequence:
 
-### B1 — The person signs up normally through `/login`
+### B1 — The person signs up normally through `/login` (and tells you WHICH email) ← manual confirmation #1
 
-> "Decide which account will be the admin (your own email is the obvious choice). **Sign up / log in normally on the live site via `/login`** — as a customer or shop, doesn't matter. That creates a `profiles` row with `role` = `customer`/`shop`. We'll flip just that one row to `admin`."
+> "Decide which account will be the admin (your own email is the obvious choice) and **tell me that email** — I can't guess it, and I'll promote exactly that one account. **Sign up / log in normally on the live site via `/login`** — as a customer or shop, doesn't matter. That creates a `profiles` row with `role` = `customer`/`shop`. We'll flip just that one row to `admin`."
 
-Wait until they confirm the account exists. (If they already have an account from earlier milestones, they can reuse it — no need to make a new one.)
+**This is the first of the two things the student decides by hand:** which email becomes the admin. Wait until they give you the email AND confirm the account exists. (If they already have an account from earlier milestones, they can reuse it — no need to make a new one.)
 
 ### B2 — Find them in `profiles`
 
@@ -102,17 +106,18 @@ where email = '<your-email>';
 SELECT id, email, role FROM public.profiles WHERE email = '<your-email>';   -- role = 'admin'
 ```
 
-> "Now **log out and back in** on the site so the app re-reads `role='admin'`. The `/admin/payouts` page itself is built in M2.2 — but the admin account must exist *before* that page is useful, which is why we do it now."
+> "Now **log out and back in** on the site so the app re-reads `role='admin'`. The admin-only payout page that uses this role is built in a later milestone — but the admin account must exist *before* that page is useful, which is why we do it now."
 
-**Why this can't be self-escalated (say it once):** there is no UI that writes `admin`; the sign-up tab only writes `buyer`/`shop`; the only path to `admin` is a migration *you* run with the service-role connection. M2.2 additionally keeps `role` changes off the client path and gates `/admin/payouts` server-side ([[supabase-best-practice]]).
+**Why this can't be self-escalated (say it once):** there is no UI that writes `admin`; the sign-up tab only writes `buyer`/`shop`; the only path to `admin` is a migration *you* run with the service-role connection. The later admin-only pages additionally keep `role` changes off the client path and gate the admin route server-side ([[supabase-best-practice]]).
 
 ---
 
 ## Verify (all must pass)
 
 - ✅ **Stripe connected in sandbox** — a read call returns `livemode: false`; the key in play is `sk_test_…` (NOT `sk_live_…`).
-- ✅ **`STRIPE_SECRET_KEY` in Vercel env** — the sandbox `sk_test_…` is saved as a Production env var (A4), ready for M2.1's build. (`STRIPE_WEBHOOK_SECRET` is NOT here — it's created with the webhook endpoint in M2.1 build Step 8.)
+- ✅ **`STRIPE_SECRET_KEY` in Vercel env (student-confirmed)** — the sandbox `sk_test_…` is saved as a Production env var (A4, **manual confirmation #2** — you can't read it, the student confirms it). (`STRIPE_WEBHOOK_SECRET` is NOT here — it's created with the webhook endpoint in M2.1 build Step 8.)
 - ✅ **You know the two webhook-secret sources** — `stripe listen` (rotating, local) ≠ dashboard endpoint (stable, Vercel prod); the build skill uses the dashboard one ([[stripe-best-practice]] Rule 4).
+- ✅ **The student told you WHICH email to promote** — **manual confirmation #1**; you promoted exactly that one account.
 - ✅ **Exactly one account promoted** — `SELECT ... WHERE email=...` shows `role='admin'`, applied via `apply_migration` (in the migration history), not a console edit.
 - ✅ **Sign-up still only writes `buyer`/`shop`** — `admin` was reached only by your migration; no self-escalation path exists.
 
@@ -128,4 +133,4 @@ Then return to the build skill `m2.1-buyer-to-admin-payments`.
 - Stripe API keys (test vs live): https://stripe.com/docs/keys
 - Stripe CLI / `stripe listen`: https://stripe.com/docs/stripe-cli
 - Supabase migrations: https://supabase.com/docs/guides/deployment/database-migrations
-- Cross-skill: [[m2.1-buyer-to-admin-payments]] · [[stripe-best-practice]] · [[supabase-best-practice]] · [[stripe-go-live]] · [[m2.2-admin-to-seller-payment]]
+- Cross-skill: [[m2.1-buyer-to-admin-payments]] · [[stripe-best-practice]] · [[supabase-best-practice]]

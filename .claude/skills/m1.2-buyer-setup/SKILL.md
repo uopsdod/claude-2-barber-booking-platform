@@ -447,9 +447,10 @@ Then have Claude Code **push to `main`** (recall the GitHub PAT from Secrets Man
 
 ## Next step
 
-When `m1.2-buyer-setup-checklist` is green, tell the student:
-「M1.2 完成了！客人現在可以瀏覽所有理髮師、進到某位理髮師的詳細頁、按 Book 開啟 pop-up dialog 選日期＋時段，確認後就建立了一筆 `pending_payment` 預約（時段沒有 status 欄位，但因為 `booking_slots` 已經寫入，anti-join 會讓它從可預約清單消失；`booking_slots` 上的 `UNIQUE(slot_id)` 也擋掉同一時段的第二筆 live 預約），並能在 `/bookings` 看到自己的預約。**這筆 `pending_payment`、`paid_at` 為 NULL 的預約就是 M1.2 的完整成果——還沒收錢**，佔位是靠 `booking_slots` 的存在、與付款無關。準備好的話跟我說『啟動 M2.1』，我們來接 Stripe：把那顆 Confirm 改成開 Stripe Checkout，付款成功後 webhook 才把**這筆預約**從 `pending_payment` 變 `paid`、蓋上 `paid_at`，而且**誰先付款誰就贏得這個時段**；平台 20%／理髮師 80% 的拆帳是月底結算（M2.2）才從 `paid` 預約推導出來的。」
-Then load `m2.1-buyer-to-admin-payments` (run `m2.1-buyer-to-admin-payments-prerequisites` first — it sets up the Stripe sandbox auth and promotes your admin account).
+When `m1.2-buyer-setup-checklist` is green, tell the student (milestone-scoped — celebrate M1.2, don't surface the next milestone):
+「M1.2 完成了！客人現在可以瀏覽所有理髮師、進到某位理髮師的詳細頁、按 Book 開啟 pop-up dialog 選日期＋時段，確認後就建立了一筆 `pending_payment` 預約（時段沒有 status 欄位，但因為 `booking_slots` 已經寫入，anti-join 會讓它從可預約清單消失；`booking_slots` 上的 `UNIQUE(slot_id)` 也擋掉同一時段的第二筆 live 預約），並能在 `/bookings` 看到自己的預約。**這筆 `pending_payment`、`paid_at` 為 NULL 的預約就是 M1.2 的完整成果——還沒收錢**，佔位是靠 `booking_slots` 的存在、與付款無關。買家預約這一側到這裡就完整了 ✅」
+
+> **Note for Claude Code (author-only — do NOT volunteer to the student):** the next milestone wires Stripe payment onto the very same Confirm action (Checkout → webhook flips the booking `pending_payment → paid` + stamps `paid_at`; first to pay wins; the 20/80 split is derived at month-end, later). When the instructor advances the student (or the student asks "what's next"), run `m2.1-buyer-to-admin-payments-prerequisites` first (Stripe sandbox auth + promote the admin account), then load `m2.1-buyer-to-admin-payments`. Don't seed payment/settlement into the student's mental model at the end of M1.2.
 
 ## Reference
 
