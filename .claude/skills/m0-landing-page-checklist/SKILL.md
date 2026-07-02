@@ -69,7 +69,8 @@ Ask the student for:
 
 #### Section D — Auth + role
 - **D1** The `/login` page shows a **Customer ↔ Shop tab/toggle** on sign-up.
-- **D2** **The decisive test:** sign up a brand-new email **as a Shop** on the live site, then check the student's OWN Supabase → Authentication → Users (the new user appears there, not a Lovable-default backend).
+- **D2** **The decisive test:** sign up a brand-new email **as a Shop** on the **live Vercel site** (not a Lovable preview), then check the student's OWN Supabase → Authentication → Users (the new user appears there, not a Lovable-default backend).
+  > If sign-up fails on the live site or the user lands in the wrong (Lovable-default) backend, the usual cause is the **Vercel env vars**: the code was pointed at the new Supabase (build Step 8.2) but the matching `*_SUPABASE_URL` / `*_SUPABASE_PUBLISHABLE_KEY` were **not** added to Vercel + redeployed (Step 8.3). Fix that first, then re-run D2. (`VITE_*` names for a Vite app, `NEXT_PUBLIC_*` for Next.js.)
 - **D3** **The `profiles.role` stub works** — the new shop sign-up created a `profiles` row with `role = 'shop'`:
   ```sql
   -- via Supabase MCP execute_sql, or the SQL editor:
@@ -242,9 +243,9 @@ Make sure the Supabase client is initialized exactly once and reads from env —
 
 Keep the Sign Up / Sign In / Sign Out flow and the Customer/Barber role tab exactly as they are. Only the backend target changes. The sign-up call must still pass the chosen role in user metadata (options.data.role).
 
-After this change, sign-up should create users in the user's own Supabase auth.users table — verify by signing up a NEW test user in the Lovable preview, then checking the Supabase dashboard → Authentication → Users — the new email should appear there.
+After this change, sign-up should create users in the user's own Supabase auth.users table. (You'll verify end-to-end on the live Vercel URL below — after the env vars are set + redeployed — by signing up a NEW test user and checking the Supabase dashboard → Authentication → Users.)
 
-As last, reminder users to manually add the same Supabase URL + publishable-key environment variables to Vercel (Settings → Environment Variables), then redeploy.
+As last, remind the user: the same Supabase URL + publishable-key env vars must ALSO be added by hand in Vercel (Settings → Environment Variables, Production), then REDEPLOY. This code change alone does NOT put them on the live site — no tool (Cowork or Lovable) can set Vercel env vars, so the student adds them manually. Env mismatch / skipping the redeploy is the most common M0 failure.
 """
 
 **Check the sign-up feature on the Vercel URL to verify the database**
