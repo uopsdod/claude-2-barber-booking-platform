@@ -54,11 +54,14 @@ ROUTES: /  ·  /login  ·  /barbers   (there is no /app).
 
 EXECUTION MODE (COWORK-FIRST)
 -----------------------------
-Written for Cowork on Desktop — the course's primary environment. Steps 4–6 set
-up the Cowork project and its connectors. The ONE part that needs a local shell
-is writing ~/.aws/credentials (Step 4); you paste a CLI/desktop prompt for that.
-Everywhere else, the AWS/Vercel/Supabase connectors do the work from inside
-Cowork.
+Written for Cowork on Desktop — the course's primary environment. Steps 1–3 use
+Lovable (generate the v1 UI, then hand the code off to a GitHub repo); Step 4
+sets up the Cowork project + connectors, and FROM STEP 4 ON every prompt runs in
+COWORK (Claude Code edits the repo directly and pushes to GitHub — Vercel
+auto-deploys), NOT in Lovable. So the Step 8 Supabase swap is a Cowork prompt,
+not a Lovable one. The ONE part that needs a local shell is writing
+~/.aws/credentials (Step 4); you paste a CLI/desktop prompt for that. Everywhere
+else, the AWS/Vercel/Supabase connectors do the work from inside Cowork.
 
 On a pure local CLI instead: the aws ... commands shown here apply directly
 (same calls the AWS MCP makes); the connector-install bullets become "make sure
@@ -420,37 +423,75 @@ auth.users going into M1.1, and Supabase will hold the app's real tables.
   3. Project Settings -> API: copy the Project URL and the Publishable API key
      (sb_publishable_* — the new anon key; browser-safe, RLS-protected).
 
-8.2 — Paste this prompt into Lovable (replace the two values):
+8.2 — Give Claude Code this prompt IN COWORK (replace the two values). From
+  Step 4 on you work in Cowork, not Lovable — Claude Code edits the repo
+  directly and pushes to GitHub (Vercel auto-deploys). This is a code change on
+  the repo, so it runs in Cowork:
 
 Prompt """
   Switch this project's backend from Lovable Cloud to the user's own Supabase
   project. Do NOT keep any Lovable Cloud references.
   1. Find every place the project uses Lovable Cloud's Supabase client (usually
     src/integrations/supabase/client.ts for Vite, or the Supabase client setup
-    for Next.js). Point it at:
-    - NEXT_PUBLIC_SUPABASE_URL (or VITE_SUPABASE_URL) = XXXXX
-    - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or VITE_SUPABASE_PUBLISHABLE_KEY)
-      = XXXXX
+    for Next.js) and point it at the user's OWN Supabase, reading from env:
+    - Next.js app: NEXT_PUBLIC_SUPABASE_URL = XXXXX
+                   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = XXXXX
+    - Vite app:    VITE_SUPABASE_URL = XXXXX
+                   VITE_SUPABASE_PUBLISHABLE_KEY = XXXXX
+    Use whichever prefix matches the framework (Next.js -> NEXT_PUBLIC_*, Vite ->
+    VITE_*). The CODE change is what this Cowork prompt does; the Vercel env
+    vars themselves are added by hand in Step 8.3 (below) — no tool (Cowork or
+    Lovable) can set those.
   2. Update .env / .env.local; remove any LOVABLE_CLOUD_* vars or Lovable-owned
     Supabase refs.
   3. Initialize the client once, reading from env — no hardcoded URLs.
-  4. Disconnect the Lovable Cloud integration if there's a UI toggle.
+  4. Remove any remaining Lovable Cloud integration from the code (packages,
+    config, client refs) so nothing still points at the old backend.
   5. Keep the Sign Up / Sign In / Sign Out flow and the Customer/Barber role tab
     exactly as they are — only the backend target changes. The sign-up call
     must still pass the chosen role in user metadata (options.data.role).
   After this, a new sign-up should create a user in the user's own Supabase
-  auth.users — verify by signing up a NEW test user in the preview, then
-  Supabase dashboard -> Authentication -> Users.
-  Final reminder to the user: add the same env vars to Vercel.
+  auth.users. (You'll verify end-to-end on the live Vercel URL in Step 8.4,
+  after the env vars are set + redeployed: sign up a NEW test user, then check
+  Supabase dashboard -> Authentication -> Users.)
+  Final reminder to the user (surface this clearly at the end): the same env
+  vars must ALSO be added by hand in the Vercel dashboard and the site
+  redeployed — see Step 8.3. This code change alone does NOT put them on the
+  live site.
 """
 
-8.3 — Finish the wiring outside Lovable:
+8.3 — Finish the wiring in the dashboards (Supabase + Vercel):
   1. Supabase Authentication -> Providers: confirm Email is enabled (demo can
      turn off email confirmation).
-  2. In Vercel set the same-named environment variables (Settings ->
-     Environment Variables): NEXT_PUBLIC_SUPABASE_URL + the publishable key
-     (values matching Lovable), then redeploy. Env mismatch is the most common
-     M0 failure.
+  2. In Vercel, MANUALLY add the SAME env vars the code now reads — no tool
+     (Cowork or Lovable) can set Vercel env vars, so YOU (the student) add them
+     by hand. Walk the student through it exactly:
+
+       a. Open https://vercel.com -> click your project (the one importing this
+          repo).
+       b. Top nav -> Settings -> left sidebar -> Environment Variables.
+       c. For EACH of the two vars, in the "Add New" row enter:
+            - Key   = the variable name (see the framework list below)
+            - Value = the matching value from Step 8.1 (Project URL, then the
+                      sb_publishable_* key)
+            - Environments = tick Production (ticking all three is fine)
+          then click "Save". Do this once for the URL, once for the key.
+       d. Redeploy so the new vars take effect: Deployments tab -> latest
+          deployment -> "..." menu -> Redeploy (Vercel reads env at build time,
+          NOT per request, so an existing deployment won't pick them up until
+          you redeploy).
+
+     Variable NAMES — use the pair that matches the framework:
+       - Next.js app: NEXT_PUBLIC_SUPABASE_URL
+                      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+       - Vite app:    VITE_SUPABASE_URL
+                      VITE_SUPABASE_PUBLISHABLE_KEY
+
+     Values must match the ones wired into the code in 8.2 (8.1's Project URL +
+     publishable key). Env mismatch / forgetting to add these is the most common
+     M0 failure:
+     the code change (8.2) alone is NOT enough — without the matching Vercel env
+     vars + a redeploy, the live site can't reach Supabase and auth fails.
 
 8.4 — Verify on the live Vercel URL: sign up a brand-new email -> sign in ->
   Supabase Authentication -> Users shows the new user in YOUR OWN project.

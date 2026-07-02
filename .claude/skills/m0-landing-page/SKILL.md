@@ -43,9 +43,10 @@ The three roles are **`customer` · `shop` · `admin`**. The sign-up tab labels 
 
 ## Next step
 
-When `m0-landing-page-checklist` is green, tell the student:
-「M0 完成了！你現在有一個能用 Customer / Shop 兩種身分註冊登入的線上理髮預約入口網站，而且 Cowork 專案、AWS / Vercel / Supabase 連接器、GitHub token、`profiles.role` 都備好了。準備好的話跟我說『啟動 M1.1』，我們來讓理髮店開店、建立預約排程。」
-Then load `[[m1.1-seller-setup]]` (run `[[m1.1-seller-setup-prerequisite]]` first — it reuses the AWS access, GitHub token, and Supabase project set up here).
+When `m0-landing-page-checklist` is green, tell the student (milestone-scoped — celebrate M0, don't surface the next milestone):
+「M0 完成了！你現在有一個能用 Customer / Shop 兩種身分註冊登入的線上理髮預約入口網站，而且 Cowork 專案、AWS / Vercel / Supabase 連接器、GitHub token、`profiles.role` 都備好了。入口網站這一步到這裡就完整了 ✅」
+
+> **Note for Claude Code (author-only — do NOT volunteer to the student):** the next milestone is the shop/seller setup (list barbers, services, schedule slots, payout bank info). When the instructor advances the student (or the student asks "what's next"), run `[[m1.1-seller-setup-prerequisite]]` first (it reuses the AWS access, GitHub token, and Supabase project set up here), then load `[[m1.1-seller-setup]]`. Don't name or seed the next milestone into the student's mental model at the end of M0.
 
 ## Reference
 
