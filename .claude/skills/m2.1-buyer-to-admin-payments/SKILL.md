@@ -38,10 +38,10 @@ Trigger phrases:
 | Edit + push the two API routes + dialog | `git` + your editor | git tool, recall GitHub PAT from Secrets Manager (`barber-project/github`) |
 | Stripe sandbox keys / confirm `livemode:false` | Stripe CLI (`stripe ...`) | Stripe MCP (`mcp__claude_ai_Stripe__*`) |
 | Apply the `commission_rates` migration | `supabase` CLI | Supabase MCP `mcp__claude_ai_Supabase__apply_migration` |
-| Set `STRIPE_*` env vars + create the webhook endpoint | Stripe/Vercel dashboards | **dashboards** — Stripe MCP does NOT manage webhook endpoints; Vercel MCP does NOT manage env vars (both are dashboard steps) |
+| Set `STRIPE_*` env vars + create the webhook endpoint | Stripe/Vercel dashboards | **done in the prereq** (up front) — Stripe MCP does NOT manage webhook endpoints; Vercel MCP does NOT manage env vars. The build only *confirms* them + redeploys (Step 8) |
 | Local webhook testing | `stripe listen --forward-to localhost:3000/api/stripe/webhook` | — (Cowork students test against the deployed Vercel URL) |
 
-The two genuinely-manual steps — **create the webhook endpoint in the Stripe dashboard** and **add the two env vars in the Vercel dashboard** — have no MCP in 2026. Everything else the connectors do.
+The genuinely-manual steps — **creating the webhook endpoint in the Stripe dashboard** and **adding the two env vars in the Vercel dashboard** — have no MCP in 2026, so they're done **up front in the prereq** ([[m2.1-buyer-to-admin-payments-prerequisites]]); the build just confirms them and redeploys. Everything else the connectors do.
 
 ## Architecture
 
@@ -59,7 +59,7 @@ How the diagram maps to M2.1:
 You (Claude Code) **implement every step you can yourself, in order — do NOT wait for the student's approval between the steps you can do.** Run straight through the tool-doable work: build each step, then **verify it yourself before moving on**, leveraging every tool you have — the Supabase MCP (`apply_migration` / `execute_sql`), the Stripe MCP or CLI, the GitHub push, `call_aws` / the AWS CLI, and direct reads / `curl` against the deployed app.
 
 **A few steps are unavoidable manual UI actions** — as of 2026 neither the Vercel connector manages env vars nor the Stripe MCP manages webhook endpoints, and only a human can type a card into Stripe's hosted Checkout. For those, **don't pretend to do them — GUIDE the student through the UI, hand them the exact values to paste, then wait for them to confirm and verify the result yourself** (e.g. `curl` the webhook path, re-query the booking). The manual steps are:
-> - **Step 8.2 / 8.3** — create the webhook endpoint in the Stripe dashboard and paste its `STRIPE_WEBHOOK_SECRET` (`whsec_…`) into Vercel env + redeploy (the secret doesn't exist until the endpoint does).
+> - **Step 8.2** — confirm the webhook endpoint + `STRIPE_WEBHOOK_SECRET` that the prereq already created, then redeploy so the newly-built route + env vars go live. (Creating them is the prereq's A5, not a build step.)
 > - **Step 9** — enter the test card `4242 4242 4242 4242` in Stripe's hosted Checkout page.
 >
 > (`STRIPE_SECRET_KEY` is no longer a build step — it's set in the prerequisite alongside the Stripe sandbox connection; Step 3 only *confirms* it's there.)
@@ -73,7 +73,7 @@ Everything else — the `commission_rates` migration, both API routes, the dialo
 5. Rewire the M1.2 dialog confirm → launch Checkout
 6. Build `POST /api/stripe/webhook` (raw-body verify, idempotent, flip pending_payment → paid + stamp paid_at)
 7. Exempt `/api/stripe/webhook` in middleware
-8. Add the `/bookings/success` poll page + create the dashboard webhook endpoint + `STRIPE_WEBHOOK_SECRET`
+8. Add the `/bookings/success` poll page + confirm the webhook endpoint & `STRIPE_WEBHOOK_SECRET` (created in the prereq) + redeploy
 9. End-to-end test with `4242 4242 4242 4242` → run the checklist
 
 ---
@@ -123,7 +123,7 @@ create policy "commission_rates_write_admin"  on public.commission_rates for all
 
 > 到 **Vercel → Settings → Environment Variables**，確認 `STRIPE_SECRET_KEY`（`sk_test_…`，Production scope）已經在前置作業裡設好了。如果不在，回 `m2.1-buyer-to-admin-payments-prerequisites` 補上再回來。
 
-`STRIPE_WEBHOOK_SECRET` comes in Step 8 (you can't know it until the endpoint exists). These are **app-runtime keys → Vercel env, NOT AWS Secrets Manager** ([[aws-secrets-best-practice]]; AWS holds only operational/dev secrets like the GitHub PAT). The Stripe secret key is server-only — it never ships in the browser bundle.
+`STRIPE_WEBHOOK_SECRET` is **also set in the prereq** (A5, created with the webhook endpoint) — Step 8 just confirms it and redeploys. Both are **app-runtime keys → Vercel env, NOT AWS Secrets Manager** ([[aws-secrets-best-practice]]; AWS holds only operational/dev secrets like the GitHub PAT). The Stripe secret key is server-only — it never ships in the browser bundle.
 
 > **Note for Claude Code:** Vercel MCP does **not** manage env vars in 2026, so you can't read the var directly — ask the student to confirm it's present (or spot it by the checkout route working once deployed). If it was only *just* added, remember a **redeploy** is required for it to take effect.
 
@@ -294,18 +294,18 @@ export const config = {
 
 ---
 
-### Step 8 — `/bookings/success` poll page + dashboard webhook endpoint + `STRIPE_WEBHOOK_SECRET`
+### Step 8 — `/bookings/success` poll page + confirm the webhook endpoint/secret (set in the prereq) + redeploy
 
 **8.1 — The success page (UX only):**
 > 「做一個 `/bookings/success` 頁面：讀 `session_id`，每 1–2 秒去查這筆 booking 的 `status`，顯示『付款處理中…』直到變成 `paid`，再顯示『預約成功！』。這頁**只查不改**——webhook 才是真相來源。使用者付完款後可能直接關掉瀏覽器，所以絕對不能靠這頁來確認預約。」
 
-**8.2 — Create the webhook endpoint in the Stripe dashboard** (no MCP — dashboard step):
-> 到 Stripe dashboard（**sandbox / test mode**）→ Developers → **Webhooks → Add endpoint** → URL 填 `https://<your>.vercel.app/api/stripe/webhook` → 訂閱事件 **`checkout.session.completed`** → 建立。建立後 Stripe 會給你一個 **Signing secret**（`whsec_…`）。
+**8.2 — Confirm the webhook endpoint + `STRIPE_WEBHOOK_SECRET` (created in the prereq), then redeploy:**
 
-**8.3 — Put the signing secret in Vercel env, then redeploy:**
-> 到 **Vercel → Environment Variables**，新增 `STRIPE_WEBHOOK_SECRET = whsec_…`（Production），然後 **redeploy**。
+The webhook endpoint (`https://<your>.vercel.app/api/stripe/webhook`, event `checkout.session.completed`) and `STRIPE_WEBHOOK_SECRET` were **already created in the prerequisite** ([[m2.1-buyer-to-admin-payments-prerequisites]] A5) — before this route existed. Now that Steps 6–7 have shipped the route, just confirm both are in place and **redeploy** so the new route + env vars go live:
 
-> **Note for Claude Code:** the **dashboard-endpoint** `whsec_…` (stable) is **different** from the `stripe listen` CLI banner secret (which rotates each restart) — local dev uses the CLI one, Vercel prod uses this dashboard one ([[stripe-best-practice]] Rule 4). The endpoint points at the **Vercel URL for now**; when M3 attaches the custom domain, you create a *new* live endpoint on that domain ([[stripe-go-live]]). Stripe MCP does not manage webhook endpoints in 2026 — this stays a dashboard step.
+> 確認前置作業已經：(1) 在 Stripe dashboard（sandbox）建好 webhook 端點指向 `https://<your>.vercel.app/api/stripe/webhook`、只訂閱 `checkout.session.completed`；(2) 把 `STRIPE_WEBHOOK_SECRET = whsec_…` 放進 Vercel env（Production）。**都在的話，觸發一次 Vercel redeploy**，讓剛做好的 `/api/stripe/webhook` 路由和環境變數上線。若少了任何一個，回 `m2.1-buyer-to-admin-payments-prerequisites` A5 補上。
+
+> **Note for Claude Code:** don't re-create the endpoint or re-add the secret here — that's the prereq's job (moved up front so the build is pure code). The **dashboard-endpoint** `whsec_…` (stable) is **different** from the `stripe listen` CLI banner secret (which rotates each restart) — local dev uses the CLI one, Vercel prod uses the dashboard one ([[stripe-best-practice]] Rule 4). The endpoint points at the **Vercel URL for now**; when M3 attaches the custom domain, you create a *new* live endpoint on that domain ([[stripe-go-live]]). Until this redeploy, the endpoint's deliveries were failing (404 — no route yet), which was expected; the actual delivery test is Step 9.
 
 ---
 
