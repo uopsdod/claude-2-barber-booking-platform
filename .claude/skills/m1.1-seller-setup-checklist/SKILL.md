@@ -1,6 +1,6 @@
 ---
 name: m1.1-seller-setup-checklist
-description: 抽成制理髮師預約平台 Milestone 1.1 verification — checks the barber side is real and correctly locked down: barber CRUD (a shop can run MANY barbers), service CRUD, slot publish (`bookable_slots` is a plain time window — NO status column), sample-hairstyle-photo upload (the `barber_photos` table + the public `barber-photos` Storage bucket), the role flips to 'shop', AND the security tests that matter most — RLS denies a cross-barber edit, the shop-level bank fields on `profiles` are NOT world-readable (and `barbers` no longer has bank columns), and a barber can't write into another's photo folder. Use when the student says "驗收 M1.1", "check M1.1", "M1.1 done?", or after the `m1.1-seller-setup` skill completes Step 6.
+description: 抽成制理髮師預約平台 Milestone 1.1 verification — checks the barber side is real and correctly locked down: barber CRUD (a shop can run MANY barbers), service CRUD, slot publish (`bookable_slots` is a plain time window — NO status column), sample-hairstyle-photo upload (the `barber_photos` table + the public `barber-photos` Storage bucket), the role flips to 'shop', the shop's `display_name` (shop name — a required onboarding field that M2.2's payout page snapshots) is filled, AND the security tests that matter most — RLS denies a cross-barber edit, the shop-level bank fields on `profiles` are NOT world-readable (and `barbers` no longer has bank columns), and a barber can't write into another's photo folder. Use when the student says "驗收 M1.1", "check M1.1", "M1.1 done?", or after the `m1.1-seller-setup` skill completes Step 6.
 ---
 
 # M1.1 — Barber Profile & Schedule Checklist
@@ -20,7 +20,7 @@ Verifies the student actually completed M1.1 — not just *thinks* they did. Peo
 | C — Slot publish | Supabase MCP / SQL editor | **Supabase MCP** |
 | D — RLS cross-barber denial | two browser sessions + Supabase MCP | **second test account in the live app** (MCP can't prove this — see below) |
 | E — Role flips to 'shop' | Supabase MCP | **Supabase MCP** |
-| F — Shop-level bank fields (profiles) not world-readable | Supabase MCP + `get_advisors` | **Supabase MCP** + `get_advisors` (structural) |
+| F — Shop-level profile: bank fields not world-readable + shop `display_name` present | Supabase MCP + `get_advisors` | **Supabase MCP** + `get_advisors` (structural) |
 | G — Sample hairstyle photos | Supabase MCP + Storage | **second test account** for the cross-folder write (see below) |
 
 The reads below run through the **Supabase MCP** (`execute_sql` / `get_advisors`) in both modes — that's the authoritative path. Refer to the MCP tools by their **bare names** (`execute_sql`, `get_advisors`, `list_tables`); this course's connector namespaces them **per session** (e.g. `mcp__<session-id>__execute_sql`), so the literal `mcp__claude_ai_Supabase__…` string won't resolve — call whichever namespaced variant your session exposes.
@@ -115,8 +115,8 @@ Ask the student for:
   ```
   Expect Barber A (and B) here. *Recovery:* the role wiring / "Become a shop" flow (build skill Step 1) — and confirm the upgrade path writes `shop`, **never `admin`**.
 
-#### Section F — Shop-level bank fields (on `profiles`) NOT world-readable
-> Bank details are now **shop-level** — they live on `profiles.bank_account_name` / `profiles.bank_account_number` (shared by all that shop's barbers), NOT on `barbers`. So the test is twofold: `barbers` must carry **no** bank columns, and the `profiles` bank fields must be readable only by their shop + admin.
+#### Section F — Shop-level profile: bank fields NOT world-readable + shop name present
+> Bank details are now **shop-level** — they live on `profiles.bank_account_name` / `profiles.bank_account_number` (shared by all that shop's barbers), NOT on `barbers`. So the test is twofold: `barbers` must carry **no** bank columns, and the `profiles` bank fields must be readable only by their shop + admin. F3 additionally confirms the shop's **name** (`profiles.display_name`, a required onboarding field, public-safe) is filled — it's how M2.2's payout page identifies the shop.
 - **F1** **`barbers` has NO bank columns** (they moved to `profiles`):
   ```sql
   select column_name from information_schema.columns
@@ -134,6 +134,12 @@ Ask the student for:
   get_advisors  →  type: "security"
   ```
   Expect RLS enabled on `platform_settings` / `profiles` / `barbers` / `services` / `bookable_slots` and no `rls_disabled_in_public` for them. The advisor should be **clean** — in particular **no `security_definer_view` ERROR on `barbers_public`**, because the build skill creates it with `security_invoker = on`. If that ERROR appears, the view was created without `security_invoker` — re-apply the Step 3 view DDL. *Recovery:* build skill Steps 3–4, plus the `profiles` bank-field RLS introduced in m0-landing-page.
+- **F3** **Every `shop` profile has a `display_name` (the shop name — required to finish onboarding).** `display_name` is what identifies the shop on the M2.2 admin payout page (`payouts.shop_name` is snapshotted from it), so an onboarded shop must not have it NULL/blank:
+  ```sql
+  select id, email, display_name, bank_account_name, bank_account_number
+  from public.profiles where role = 'shop';
+  ```
+  Expect every `role='shop'` row to have a **non-null, non-empty `display_name`** (the shop name) **and** both bank fields filled — these three are the required gate to finish shop onboarding (build skill Step, Payout settings form). A shop with a NULL/blank `display_name` means the onboarding form didn't enforce the required field (or the shop predates this rule) → the admin payout list would show a blank shop name. *Recovery:* fill it via the onboarding Payout settings form (or `update public.profiles set display_name = '<shop name>' where id = '<shop>';` for a pre-existing shop), and make the onboarding submit **require** `display_name` + both bank fields (build skill Section A rules). Note `display_name` is **not** sensitive — it's the storefront name, fine to display; only the bank fields are shop+admin-only (F2).
 
 #### Section G — Sample hairstyle photos (portfolio)
 - **G1** The `barber_photos` table exists with the right shape and Barber A has at least one photo row:
@@ -173,6 +179,7 @@ Emit a table:
 | E1 role flips to 'shop' | ✅ / ❌ | never `admin` |
 | F1 `barbers` has no bank columns (moved to `profiles`) | ✅ / ❌ | bank is shop-level now |
 | F2 `profiles` bank fields shop+admin-only + advisor clean | ✅ / ⚠️ / ❌ | get_advisors security |
+| F3 every `shop` profile has `display_name` (shop name) + bank fields filled | ✅ / ❌ | required onboarding gate; M2.2 `payouts.shop_name` snapshots it |
 | G1 `barber_photos` table + a photo row (path + is_featured) | ✅ / ⚠️ / ❌ | portfolio + M4 input |
 | G2 `barber-photos` bucket public-read + shop-write policy | ✅ / ❌ | |
 | G3 barber can't write into another's photo folder (behavioral, live app) | ✅ / ⚠️ / ❌ | `<barber_id>/` prefix enforced; ⚠️ if no 2nd account to run it |

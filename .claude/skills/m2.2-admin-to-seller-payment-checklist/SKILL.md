@@ -65,6 +65,17 @@ If there is **no admin user**, stop — send the student back to the M2.1 prereq
   order by paid_at desc;
   ```
   Expect `gap = 0` on **every** row, and `platform_cut = round(price * platform_pct)`. *Recovery:* the VIEW must compute `platform_cut = round(price * rate)` and `shop_cut = price - platform_cut` (M2.2 Step 1). There is no per-booking fee column to sum — bookings carry no split columns; if you find the VIEW reading `platform_fee`/`barber_amount`, it's on the old model.
+- **A3** **The VIEW is `security_invoker` AND `bookings` has an admin SELECT policy** — the two facts that make the owed pool visible to the admin *and* isolated per shop. Both are silent when wrong (empty admin builder / cross-shop leak), so verify them structurally:
+  ```sql
+  -- (1) owed_bookings must be security_invoker=true (else it BYPASSES bookings RLS)
+  select c.relname, c.reloptions
+  from pg_class c join pg_namespace n on n.oid=c.relnamespace
+  where n.nspname='public' and c.relname='owed_bookings';
+  -- (2) bookings must have an admin SELECT policy (M2.2 adds it — it did NOT exist before)
+  select policyname, cmd from pg_policies
+  where schemaname='public' and tablename='bookings' order by policyname;
+  ```
+  Expect (1) `reloptions` containing **`security_invoker=true`** (or `=on`), and (2) a `bookings` SELECT policy using `public.is_admin()` (e.g. `bookings_select_admin`) alongside the existing `bookings_select_own` / `bookings_select_shop_owner`. Then run **`get_advisors` (security)** and confirm **no `security_definer_view` ERROR** on `owed_bookings` (the WARNINGs about `anon`/`authenticated` executing the RPCs are **expected/safe** — the `is_admin()` guard is the control). *Recovery:* recreate the view `with (security_invoker = true)` and add `create policy "bookings_select_admin" on public.bookings for select using (public.is_admin());` (M2.2 Step 1). Without (1) a shop sees every shop's owed rows; without (2) the admin sees zero.
 
 #### Section B — Builder running total reconciles
 - **B1** On `/admin/payouts`, the owed-list **running total** of the checked rows equals the sum of those rows' columns. Spot-check against SQL for a given shop's owed pool:
@@ -106,6 +117,8 @@ If there is **no admin user**, stop — send the student back to the M2.1 prereq
   select count(*) from public.owed_bookings where shop_id = '<that shop>'; -- those bookings are gone from owed
   ```
   The batched bookings carry `payout_id`; their booking `status` is still **`paid`** (NOT a payout status). *Recovery:* `build_payout` must INSERT a `pending_transfer` payout (snapshots + `shop_name`) AND UPDATE the selected bookings' `payout_id`, atomically (M2.2 Step 1/3 RPC).
+  > **If the Build-payout call errors with `function min(uuid) does not exist`:** the build skill's Step 1 SQL still has the `min(bar.shop_id)` bug — Postgres has no `min(uuid)` aggregate, so `build_payout` fails at run time on the *first* call (the migration DDL compiled, so it looked fine). Fix `build_payout` to pick the shop with **`(array_agg(distinct bar.shop_id))[1]`** instead of `min(bar.shop_id)`, re-apply the migration, and re-run D1 (M2.2 build skill fix — Step 1 RPC).
+  > **If D1 shows the owed list was EMPTY for the admin** (nothing to select / build): the admin can't read `bookings`. Confirm `owed_bookings` is `security_invoker = true` **and** a `bookings_select_admin` (`for select using (public.is_admin())`) policy exists — without both, the admin sees zero owed rows (Section C / M2.2 Step 1).
 - **D2** **Same-shop guard.** Building a payout from a selection spanning **two different shops** must be **rejected** (not silently split):
   ```sql
   -- pick one owed booking from shop A and one from shop B, then:
@@ -195,6 +208,7 @@ Emit a table:
 |---|---|---|
 | A1 `owed_bookings` VIEW returns the live owed pool (paid + payout_id NULL, shop rollup via service) | ✅ / ❌ | no transactions; no slot/barber_id path |
 | A2 split sums back to price (gap=0), platform_cut = round(price×rate) | ✅ / ⚠️ / ❌ | shop_cut = price − platform_cut |
+| A3 view is `security_invoker` + `bookings` has admin SELECT; no advisor ERROR | ✅ / ❌ | else silent: empty admin builder / cross-shop leak |
 | B1 builder running total reconciles with checked rows | ✅ / ❌ | total = sum of checked rows |
 | C1 admin reaches /admin/payouts (owed list + ledger + build) | ✅ / ❌ | shop attribution |
 | C2 non-admin denied at /admin/payouts | ✅ / ❌ | **the decisive test** |

@@ -117,8 +117,9 @@ join public.profiles p   on p.id  = bar.shop_id
 where b.status='paid' and b.payout_id is null
 limit 5;
 ```
-- Each owed booking resolves to a **non-null `shop_id`** and a **`display_name`** → ✅ the VIEW's shop rollup + the payout's `shop_name` snapshot will work.
+- Each owed booking resolves to a **non-null `shop_id`** and a **non-null `display_name`** (the shop name) → ✅ the VIEW's shop rollup + the payout's `shop_name` snapshot will work and show a real name.
 - A row drops out of the join (NULL `shop_id` / no matching barber or profile) → a data-integrity gap in the seller data; fix it in M1.1's onboarding before building the settlement page (a booking with no resolvable shop can never be paid out).
+- The join resolves but **`display_name` is NULL/blank** → the shop finished before M1.1 made the shop name required (or the onboarding form didn't enforce it). Not a hard blocker — the bank transfer keys off `bank_account_*`, not the name — but `build_payout` snapshots `shop_name = display_name`, so the payout row and the `/admin/payouts` list would show a **blank shop name**. Set it before building for a clean demo: `update public.profiles set display_name = '<shop name>' where id = '<shop_id>';` (and, in M1.1, the onboarding form should **require** `display_name` — see `[[m1.1-seller-setup]]` Section A / `[[m1.1-seller-setup-checklist]]` F3).
 
 **3c — the shop-level bank fields + `display_name` live on `profiles` (NOT on `barbers`), and are RLS-restricted:**
 ```sql

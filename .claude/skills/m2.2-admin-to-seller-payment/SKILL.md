@@ -18,7 +18,7 @@ By the end the student has:
 1. A **real-time `owed_bookings` Supabase VIEW** — the LIVE owed pool: every `paid` booking **WHERE `payout_id IS NULL`**, each carrying its derived split (`price × the rate in force → platform_cut` / `shop_cut`) and its shop attribution via `bookings → services → barbers → shop_id` (so a shop's many barbers all surface under one `shop_id`). It is **live** — the split is computed in the VIEW from `commission_rates`, not stored per booking. The `/admin/payouts` builder reads this.
 2. A flexible **`payouts` settlement TABLE** — a free-form **BATCH for ONE shop**. A shop has **MANY** payouts over time (June, July, a single late-booking top-up…), so **`shop_id` is NOT unique** — the only unique key is the PK `id`. Each row snapshots `shop_name` (a denormalized copy of `profiles.display_name`), `gross`, `platform_pct`, `platform_cut`, `shop_cut`, `bookings_count`, plus `status` (`pending_transfer` → `transferred`, or `→ cancelled`), `note`, `bank_reference`, `created_by`, `marked_transferred_at`, `transferred_by`. The chosen bookings point back via `bookings.payout_id`. One payout = one shop = one bank transfer = one status ([[m1.1-seller-setup]]).
 3. **RLS** so only `role='admin'` reads/writes every `payouts` row + every shop's `profiles` bank fields; each shop reads only their **own** earnings.
-4. An **admin-only `/admin/payouts` builder** (`role='admin'` gated by middleware **and** RLS): the live **owed list** (from `owed_bookings`) with **filters** (by shop / customer / paid_at range — UI convenience, just WHERE clauses) and a **multi-select → build payout** action (an atomic RPC that verifies all selected bookings resolve to the **same shop**, inserts a `pending_transfer` payout snapshot, and stamps `bookings.payout_id`), **plus** a list of each shop's existing payouts with their status and per-row **「標記為已轉帳 / Mark as transferred」** and **「取消 / Cancel」** actions.
+4. An **admin-only `/admin/payouts` builder** (`role='admin'` gated by a **route guard** (Next.js middleware, or a `RequireAdmin` component in the Vite SPA) **and** RLS, reached via an admin-only nav link): the live **owed list** (from `owed_bookings`) with **filters** (by shop / customer / paid_at range — UI convenience, just WHERE clauses) and a **multi-select → build payout** action (an atomic RPC that verifies all selected bookings resolve to the **same shop**, inserts a `pending_transfer` payout snapshot, and stamps `bookings.payout_id`), **plus** a list of each shop's existing payouts with their status and per-row **「標記為已轉帳 / Mark as transferred」** and **「取消 / Cancel」** actions.
 5. A read-only **`/shop/earnings` page** — each shop sees their **own** paid bookings, split into **owed** (`payout_id` NULL) vs **in a payout** (with that payout's status `pending_transfer`/`transferred` + date), combined across all their barbers. A **cancelled** payout's bookings reappear as owed.
 
 **Out of scope for M2.2:** anything that moves money. There is **no Stripe Connect, no payout API, no new Checkout** — the manual bank transfer happens **outside the app** (the admin's online banking), and the admin **records** it here. The custom domain is M3.
@@ -60,14 +60,18 @@ How the pieces map to M2.2:
 
 ## Conversational flow
 
-You (Claude Code) drive the student through **6 steps**, in order. Don't dump them all at once — after each step, **wait for confirmation** before moving on.
+You (Claude Code) **implement the BUILD (Steps 0–4) yourself, in order — do NOT pause to ask the student for permission between steps. Run the build straight through in one shot**, doing each step, then **verifying it yourself before moving to the next**, leveraging every tool you have — the Supabase MCP (`apply_migration` / `execute_sql` / `generate_typescript_types` / `get_advisors`), the GitHub push (recall the PAT from Secrets Manager — don't re-ask), and direct reads / the live Vercel URL. Report what you did and verified as you go; don't stop and wait for a "go ahead" between build steps.
 
-0. Pre-flight: confirm an **admin user already exists** (from the M2.1 prerequisite) + that there are `paid` bookings
+**Step 5 (the checklist) is the exception — it is NOT part of the one-shot run.** The checklist is **student-triggered**: after the build, you **remind** the student they can run it and **stop** — do NOT run `m2.2-admin-to-seller-payment-checklist` automatically. Only run it if they explicitly ask (see Step 5).
+
+**The only hard stop DURING the build is Step 0's pre-flight:** if there is **no admin user** (or no `paid` bookings to settle), stop and route the student to the M2.1 prerequisite — you can't build an admin-gated page with no admin, and the owed pool is meaningless with no paid bookings. That check is a genuine blocker, not a courtesy pause. Everything after it — the migration, both pages, the three admin actions, the self-verification — you do end-to-end without pausing. (The pre-flight is best done by the `[[m2.2-admin-to-seller-payment-prerequisites]]` skill before this build; re-confirm it here and proceed.)
+
+0. Pre-flight: confirm an **admin user already exists** (from the M2.1 prerequisite) + that there are `paid` bookings — **the one place you may stop** (a missing admin is a blocker)
 1. Apply the Supabase migration: `owed_bookings` VIEW + `payouts` TABLE + the RPCs (build / mark-transferred / cancel) + RLS
 2. Build the **`/admin/payouts`** builder (live owed list + filters + multi-select → build payout)
 3. Wire the **admin actions** (Build payout + row-by-row "Mark as transferred" + "Cancel")
 4. Build the **`/shop/earnings`** page (read-only mirror: owed vs in-a-payout + status)
-5. Verify end-to-end → run the checklist
+5. Report what you built + self-verified, then **remind** the student they can run the checklist (student-triggered — do NOT auto-run it)
 
 ---
 
@@ -104,11 +108,12 @@ limit 5;
 
 Have Claude Code apply this as **one Supabase migration** via `mcp__claude_ai_Supabase__apply_migration` (never a raw console edit — [[supabase-best-practice]]).
 
-Four design facts to keep straight:
+Five design facts to keep straight:
 - **There is NO `transactions` table.** "Money in" is a `paid` booking's `price`. The VIEW lists `paid` bookings directly — it does not read any ledger or accumulator table.
 - **Settlement is DERIVED from `bookings.payout_id`, not a booking status.** bookings have only 3 states (`pending_payment`/`paid`/`cancelled`). A `paid` booking with `payout_id IS NULL` is **owed**; with `payout_id` set it's **in that payout** (read `payouts.status`). There is **no** `payout_pending`/`payout_transferred` booking status.
 - **The split is computed live in the VIEW** (`price × the rate in force`), NOT stored per booking. bookings have **no** `platform_fee`/`barber_amount`. Because `shop_cut = price - platform_cut`, the two always sum back to the exact price — no lost unit. The totals are **snapshotted** onto the `payouts` row at build time.
 - **Attribution is `bookings → services → barbers → shop_id`** (`service_id` already pins the barber — we do **NOT** go through the slot, and there is **no** `bookings.barber_id`).
+- **RLS: the VIEW is `security_invoker` AND M2.2 adds an admin SELECT policy on `bookings`.** Both are required or the builder is silently broken: without `security_invoker = true` the view bypasses RLS (cross-shop leak + advisor ERROR); without the new `bookings_select_admin` policy the admin sees **zero** owed rows (empty builder, no error). And `build_payout` picks the shop with `(array_agg(distinct shop_id))[1]`, **never `min(uuid)`** — there is no `min(uuid)` aggregate, so `min()` fails at run time.
 
 ```sql
 -- ============================================================
@@ -152,7 +157,16 @@ create index if not exists idx_payouts_status on public.payouts(status);
 --    Attribute each to a shop via bookings → services → barbers → shop_id (NOT through the
 --    slot; bookings has no barber_id), and apply the rate in force for that booking
 --    (the latest commission_rates row whose effective_from <= the booking's paid date).
-create or replace view public.owed_bookings as
+--    security_invoker = true is REQUIRED: on Postgres 15+ (Supabase) a view runs with the
+--    view OWNER's rights by default (security_definer), so it would BYPASS bookings RLS —
+--    a shop querying owed_bookings would see EVERY shop's rows (a cross-shop leak) and
+--    get_advisors flags a security_definer_view ERROR. With security_invoker the view
+--    inherits the querying user's RLS on bookings (the admin SELECT policy below).
+--    (drop-then-create because `create OR REPLACE view` can't add the WITH option on a
+--    pre-existing view — the drop keeps re-runs idempotent.)
+drop view if exists public.owed_bookings;
+create view public.owed_bookings
+  with (security_invoker = true) as
 select b.id as booking_id, b.price, b.paid_at,
        b.customer_id,
        bar.shop_id, bar.id as barber_id, bar.name as barber_name,
@@ -180,6 +194,15 @@ returns boolean language sql stable security definer set search_path = public as
     where p.id = auth.uid() and p.role = 'admin'
   );
 $$;
+
+-- M2.2 OWNS this policy — bookings did NOT have an admin SELECT before (M1.2/M2.1 gave it
+-- bookings_select_own for the customer + bookings_select_shop_owner for the shop, but no admin
+-- one). Without it, the security_invoker owed_bookings view returns ZERO rows for the admin
+-- (silently — no error), so the payout builder is permanently empty even though owed bookings
+-- exist. Add it here; do NOT assume it carries over. (services/barbers are world-readable and
+-- profiles already has profiles_select_admin, so only bookings needs this.)
+create policy "bookings_select_admin" on public.bookings
+  for select using (public.is_admin());
 
 -- admin can read every payout; a shop can read only their OWN rows
 create policy "payouts_select_admin_or_owner" on public.payouts
@@ -220,7 +243,12 @@ begin
   end if;
 
   -- which distinct shops do the selected (still-owed) bookings resolve to?
-  select count(distinct bar.shop_id), min(bar.shop_id), coalesce(sum(b.price),0), count(*)
+  -- NB: pick the shop id with (array_agg(distinct ...))[1], NOT min() — Postgres has NO
+  -- min(uuid) aggregate, so min(bar.shop_id) fails at RUN TIME with
+  -- "ERROR: function min(uuid) does not exist" (the DDL compiles, so static review misses it;
+  -- the first Build-payout call catches it). The same-shop guard below guarantees exactly one
+  -- distinct shop, so taking any single value is correct.
+  select count(distinct bar.shop_id), (array_agg(distinct bar.shop_id))[1], coalesce(sum(b.price),0), count(*)
     into v_shop_count, v_shop_id, v_gross, v_count
   from public.bookings b
   join public.services s  on s.id = b.service_id
@@ -316,9 +344,24 @@ begin
   end if;
 end;
 $$;
+
+-- 4) Defense-in-depth on the SECURITY DEFINER RPCs (optional but recommended).
+--    Default EXECUTE on a function is granted to PUBLIC, so get_advisors will WARN that anon +
+--    authenticated can call build_payout / mark_payout_transferred / cancel_payout / is_admin.
+--    Those WARNINGs are EXPECTED and SAFE — each RPC raises 'admin only' via the in-function
+--    is_admin() guard, which is the real control. Revoking anon's EXECUTE is belt-and-suspenders
+--    (an unauthenticated caller can't be admin anyway) and quiets the warning for the write RPCs.
+revoke execute on function public.build_payout(uuid[], text)          from anon;
+revoke execute on function public.mark_payout_transferred(uuid, text) from anon;
+revoke execute on function public.cancel_payout(uuid)                 from anon;
 ```
 
-> **Note for Claude Code:** the `owed_bookings` VIEW lists each owed booking and attributes it to a **shop** (via `bookings → services → barbers → shop_id`), so the builder can group/filter a shop's many barbers under one `shop_id`. The VIEW inherits RLS from its base table `bookings`; make sure `bookings` has shop/admin-scoped RLS from M1.2/M2.1 so a shop querying it sees only **their own** bookings and the admin sees all. The **bank account name/number** live on **`profiles`** (M0/M1.1, shop level) and are RLS-restricted to shop + admin — re-confirm with `get_advisors` after this migration. All three admin actions are **RPCs** (`security definer`, admin-guarded) so each is **atomic** — the payout row and the booking `payout_id` stamps commit together or not at all. The **same-shop guard** in `build_payout` is the integrity backbone: it rejects a mixed-shop selection, and the `payout_id IS NULL` re-guard on the UPDATE is the no-double-pay guarantee.
+> **Note for Claude Code — three RLS facts that are load-bearing (get these wrong and the builder is silently empty or leaks):**
+> - **The VIEW only inherits `bookings` RLS because it is `security_invoker = true`.** A plain view on Postgres 15+/Supabase runs with the OWNER's rights (security_definer) and would BYPASS RLS — a shop would see every shop's owed rows. The `with (security_invoker = true)` on `owed_bookings` is mandatory, not optional; without it `get_advisors` throws a `security_definer_view` ERROR and `/shop/earnings` leaks cross-shop.
+> - **M2.2 must ADD the admin SELECT policy on `bookings` (`bookings_select_admin`) — do NOT assume it carries over.** From M1.2/M2.1, `bookings` only had `bookings_select_own` (customer) + `bookings_select_shop_owner` (shop). There was NO admin policy, so a security_invoker view returns **zero rows for the admin** — the payout builder is permanently empty, silently (no error). The Step 1 SQL adds it.
+> - **The `get_advisors` WARNINGs about `anon`/`authenticated` executing the RPCs are EXPECTED and safe.** All four functions (`build_payout`/`mark_payout_transferred`/`cancel_payout`/`is_admin`) are `SECURITY DEFINER` with default PUBLIC execute; the in-function `is_admin()` guard is the real control (each raises `admin only`). The Step 1 SQL also `revoke`s anon's execute on the three write RPCs as defense-in-depth — tell the student not to panic at the warning.
+>
+> The `owed_bookings` VIEW attributes each owed booking to a **shop** (via `bookings → services → barbers → shop_id`), so the builder groups a shop's many barbers under one `shop_id`. The **bank account name/number** live on **`profiles`** (M0/M1.1, shop level) and are RLS-restricted to shop + admin — re-confirm with `get_advisors` after this migration (the only ERROR-level finding should be gone once the view is security_invoker). All three admin actions are **RPCs** (`security definer`, admin-guarded) so each is **atomic** — the payout row and the booking `payout_id` stamps commit together or not at all. The **same-shop guard** in `build_payout` is the integrity backbone: it rejects a mixed-shop selection, and the `payout_id IS NULL` re-guard on the UPDATE is the no-double-pay guarantee. (`build_payout` picks the shop id with `(array_agg(distinct shop_id))[1]`, **never** `min(uuid)` — there is no `min(uuid)` aggregate; `min(bar.shop_id)` fails at run time.)
 
 **Verify the VIEW returns live owed rows + the split sums back:**
 
@@ -331,15 +374,19 @@ order by paid_at desc;
 
 You should see one row per **owed** `paid` booking (those with `payout_id IS NULL`), each with `platform_cut + shop_cut = price` (the split sums back exactly because `shop_cut = price - platform_cut`). A shop's "what am I owed?" = `sum(shop_cut)` over its `owed_bookings` rows.
 
+**Then run `get_advisors` (security)** and read it correctly: there should be **NO `security_definer_view` ERROR** on `owed_bookings` (the `security_invoker = true` clears it). You **will** see WARNING-level findings that `anon`/`authenticated` can execute `build_payout` / `mark_payout_transferred` / `cancel_payout` / `is_admin` — those are **expected and safe** (the in-function `is_admin()` guard is the real control; the `revoke ... from anon` handles the write RPCs). Don't let the student mistake those WARNINGs for a break.
+
 ---
 
 ### Step 2 — Build the `/admin/payouts` builder (live owed list + filters + multi-select → build payout)
 
-Paste this into Lovable (or have Claude Code edit the code directly and push). The page is **gated to `role='admin'` in middleware AND by RLS** — both, so a non-admin can't reach the route and couldn't read the data even if they did.
+Paste this into Lovable (or have Claude Code edit the code directly and push). The page is **gated to `role='admin'` by a route guard AND by RLS** — both, so a non-admin can't reach the route and couldn't read the data even if they did (see the Access gate below for the per-scaffold guard).
 
 > Build an **admin-only** payout builder + ledger page at **`/admin/payouts`**.
 >
-> **Access gate:** this route is for `role='admin'` only. In the app's middleware, redirect any non-admin (signed-out, customer, or shop) away from `/admin/*` to `/login` or a 403. Also rely on Supabase RLS as the real enforcement — the page reads `payouts` and the bank fields, which only an admin can read.
+> **Access gate:** this route is for `role='admin'` only. Gate it the way this app gates `/shop/*` — a **route guard** that reads `profiles.role` and redirects any non-admin (signed-out, customer, or shop) away from `/admin/*` (to `/login` or `/barbers`). (Next.js App Router → middleware matcher; **Vite SPA (this repo's scaffold) → a `RequireAdmin` route-guard component** mirroring the existing `RequireShop`, wrapping the `/admin/*` routes.) The guard is UX only — the **real enforcement is Supabase RLS + the admin-guarded RPCs**: the page reads `payouts` + the bank fields (admin-readable only) and every write goes through a `security definer` RPC that raises `admin only`, so a non-admin who reached the route could read/write nothing.
+>
+> **Entry point — an admin nav link (do NOT skip this, or the page is unreachable):** after login an admin lands on the customer browse page (`/barbers`) with the customer header, which has **no link** to payouts — so without this the feature can only be reached by typing the URL. Add an **admin-only nav link** to `/admin/payouts` (rendered when `role='admin'`) in the shared/customer header, e.g. `{isAdmin && <Link to="/admin/payouts">Payouts</Link>}`. (Use the existing `useProfile()` `isAdmin` flag.)
 >
 > **Layout — two parts:**
 >
@@ -360,7 +407,7 @@ Paste this into Lovable (or have Claude Code edit the code directly and push). T
 
 > **Note for Claude Code:** the builder's running total must be computed from the **checked rows** themselves so it always matches the build. Amounts are whole-integer money in `platform_settings.currency` (no `_twd` suffix anywhere, no cents) — never divide by 100. The owed list is **live** — after a payout is built, its bookings drop off the owed list (their `payout_id` is set); after a payout is cancelled, its bookings reappear (their `payout_id` was nulled). Don't filter the owed list on a booking `status` other than `paid` — settlement is derived from `payout_id IS NULL`, which the VIEW already encodes. Exclude `cancelled` payouts from any "what's still owed / earned" math (their bookings are already back in the owed pool).
 
-**Verify:** log in as the admin → `/admin/payouts` loads, the owed list shows paid bookings with `payout_id IS NULL`, filtering by shop/customer/date narrows it, and the running total matches the checked rows. Log in as a **customer or shop** → `/admin/payouts` redirects/403s.
+**Verify:** log in as the admin → the **Payouts nav link is visible** and `/admin/payouts` loads; the owed list shows paid bookings with `payout_id IS NULL`, filtering by shop/customer/date narrows it, and the running total matches the checked rows. Log in as a **customer or shop** → the Payouts link is **hidden** and hitting `/admin/payouts` directly redirects away (the route guard) — and even if reached, RLS returns nothing.
 
 ---
 
@@ -438,9 +485,11 @@ This is the **shop's** view of the same numbers — read-only, scoped to themsel
 
 ---
 
-### Step 5 — Run the checklist
+### Step 5 — Hand off to the checklist (do NOT auto-run it)
 
-> **ask:** "Run the `m2.2-admin-to-seller-payment-checklist` skill."
+Once Steps 1–4 are built and you've self-verified each, you're done building. **Do NOT run the checklist skill yourself** — the checklist is **student-triggered**. Report what you built and verified, then **remind** the student they can run it when they're ready, and stop there. Only run `m2.2-admin-to-seller-payment-checklist` if the student explicitly asks for it (e.g. says "驗收 M2.2" / "check M2.2" / "run the checklist").
+
+> 「M2.2 建好了、我也自己驗過每一步。要正式驗收時，跟我說『驗收 M2.2』，我再幫你跑 `m2.2-admin-to-seller-payment-checklist`。」
 
 It verifies the owed-pool math (`price × rate = platform_cut + shop_cut`, sums back) per booking with per-shop attribution via `service → barber` (not slot, not `barber_id`), that **only `role='admin'` reaches `/admin/payouts`** (the decisive test), that **building a payout** flips the selected bookings' `payout_id` + creates a `pending_transfer` payout with the snapshot, that the **same-shop guard** rejects a mixed-shop selection, that a booking already in a payout **can't be re-grabbed** (no double-pay), that **mark-transferred** flips the payout to `transferred` (bookings unchanged), that **cancel** nulls the bookings' `payout_id` + sets the payout `cancelled` (booking status stays `paid`), that a **`transferred` payout can't be cancelled**, that the shop sees status on `/shop/earnings`, that `payouts` carries the `shop_name` snapshot, that there is **no `transactions` table** and **no fee columns on bookings**, and that bank fields aren't readable by a non-shop / non-admin.
 
@@ -454,13 +503,17 @@ It verifies the owed-pool math (`price × rate = platform_cut + shop_cut`, sums 
 4. **Re-multiplying drift / rounding direction.** The split is `platform_cut = round(price * rate)`, `shop_cut = price - platform_cut` — so the two **always sum back to the exact price**, no lost unit. Money is whole-integer in `platform_settings.currency` (no cents, no `_twd` suffix); never divide or multiply by 100 ([[supabase-best-practice]]).
 5. **Letting a payout mix shops.** A payout pays **one shop** (one bank transfer, one status). `build_payout` **must** verify every selected booking resolves to the same shop (via service → barber → shop) and reject a mixed-shop selection. Never split a shop into per-barber payouts, and never go through the slot for attribution.
 6. **Double-paying a booking.** A booking belongs to **at most one** payout (the single-valued `payout_id` FK). `build_payout`'s `WHERE status='paid' AND payout_id IS NULL` guard means a booking already in another payout can't be grabbed. Don't rely on a UNIQUE on payouts for this — the guarantee is on `bookings.payout_id`.
-7. **Admin gate in the UI only.** Hiding the menu link is not security. The gate is **middleware + RLS** — `payouts` and the bank fields are admin-or-shop-readable at the database, and all admin actions are admin-guarded RPCs. Test by hitting `/admin/payouts` as a logged-in **customer** and confirming a denial.
+7. **Admin gate in the UI only.** Hiding the menu link is not security. The gate is a **route guard + RLS** (Next.js middleware, or a `RequireAdmin` route-guard component in the Vite SPA) — `payouts` and the bank fields are admin-or-shop-readable at the database, and all admin actions are admin-guarded RPCs. Test by hitting `/admin/payouts` as a logged-in **customer** and confirming a denial. (And don't forget the **admin nav link** — see #16 — or the page is unreachable.)
 8. **Bank fields leaking.** The bank account name/number live on **`profiles`** (shop level) and are readable **only by the owning shop + admin** (M0/M1.1 RLS) — `barbers` has no bank columns. A customer or another shop must never see them — re-confirm with `get_advisors`.
 9. **Trying to move money.** There is **no Stripe payout / Connect / transfer** in this course. The money is already in the platform's balance; the bank transfer happens in the admin's online banking and is only **recorded** here (MARK TRANSFERRED).
 10. **Forgetting the cancel direction.** CANCEL **nulls** the bookings' `payout_id` (they revert to owed; their booking status stays `paid`) **and** sets the payout `cancelled` — **keep** the row for audit, never delete it. Only a `pending_transfer` payout can be cancelled; a `transferred` payout is **immutable** (the money already left). Every owed/earnings read must **exclude** `cancelled` payouts.
 11. **Mark-transferred touching the bookings.** Mark-transferred flips **only the payout** (`pending_transfer → transferred` + stamps). The bookings are already linked via `payout_id` and need **no** change — "settled" is derived. (Contrast the old model, which flipped a booking status — that's gone.)
 12. **Letting a shop write their own status.** `/shop/earnings` is strictly read-only. Only the admin can build a payout, mark transferred, or cancel (admin-guarded RPCs + RLS) — a shop must never be able to settle or mark themselves transferred.
 13. **Treating the filters as a schema grouping.** The owed-list filters (shop / customer / paid_at range) and the "select all owed for this shop this month" helper are **UI convenience only** — just WHERE clauses + a pre-check, NOT a `(shop, month)` grouping baked into the data. The payout is a free-form batch; the admin can pick any owed bookings of one shop (a partial month, a single late booking, several months).
+14. **`min(bar.shop_id)` in `build_payout` (a HARD, run-time-only bug).** Postgres has **no `min(uuid)` aggregate** — the migration DDL compiles fine, but the first "Build payout" call dies with `ERROR: function min(uuid) does not exist`. Pick the shop id with **`(array_agg(distinct bar.shop_id))[1]`** instead (the same-shop guard right after guarantees one distinct shop). Static review misses this; a live build call — or the checklist's D1 — catches it.
+15. **`owed_bookings` created as a plain view (BYPASSES RLS).** On Postgres 15+/Supabase a view defaults to the owner's rights, so a plain `create view` **leaks every shop's owed rows to any shop** and trips a `security_definer_view` advisor ERROR. Create it `with (security_invoker = true)`. AND: M2.2 must **add** `bookings_select_admin` (`for select using (public.is_admin())`) — `bookings` had no admin SELECT before M2.2, so with the invoker view the admin otherwise sees **zero** owed rows (empty builder, silent). Both are required together.
+16. **No admin nav link → the page is unreachable.** After login the admin lands on `/barbers` (customer header), which has no payouts link. Add an **admin-only** `{isAdmin && <Link to="/admin/payouts">…</Link>}` in the shared/customer header, or the only way in is typing the URL.
+17. **Panicking at the `get_advisors` RPC WARNINGs.** WARNINGs that `anon`/`authenticated` can execute `build_payout` / `mark_payout_transferred` / `cancel_payout` / `is_admin` are **expected and safe** — the in-function `is_admin()` guard is the control (each raises `admin only`), and the migration `revoke`s anon's execute on the write RPCs. The only advisor finding you must actually clear is the `security_definer_view` **ERROR** (fixed by #15's `security_invoker`).
 
 ## Expected duration
 
