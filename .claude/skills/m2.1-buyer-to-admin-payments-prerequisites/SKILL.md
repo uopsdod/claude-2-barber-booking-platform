@@ -1,6 +1,6 @@
 ---
 name: m2.1-buyer-to-admin-payments-prerequisites
-description: One-time setup before Milestone 2.1 of the barber booking platform — an INTERACTIVE, agent-driven walkthrough with TWO parts. (1) Set up ALL the pre-code Stripe wiring so the build stays pure code: connect a Stripe SANDBOX account via the Stripe MCP / CLI and verify `livemode:false` (the consent page defaults to LIVE — you must switch to sandbox), put its `STRIPE_SECRET_KEY` (`sk_test_…`) in Vercel env (A4), and create the webhook endpoint against `https://<vercel-url>/api/stripe/webhook` (event `checkout.session.completed`) + put `STRIPE_WEBHOOK_SECRET` (`whsec_…`) in Vercel env (A5) — the endpoint won't deliver until the build ships the route, tested in M2.1 Step 9, which is expected. (2) Promote ONE existing account to `role='admin'` — there is no public admin sign-up; the person signs up normally via /login, you find them with SELECT id,email,role FROM profiles, and promote them with a ONE-OFF Supabase migration (UPDATE public.profiles SET role='admin') applied via `mcp__claude_ai_Supabase__apply_migration`. Admin lives in THIS prereq because admin only matters once payment exists (the later payout/settlement work consumes it). Manual, dashboard-only actions the student MUST do (you can't): WHICH email to promote to admin, and — since Vercel MCP doesn't manage env vars and Stripe MCP doesn't manage webhook endpoints — the two Vercel env vars + the webhook endpoint. Use when the student starts M2.1, says "啟動 M2.1 的前置作業", "set up Stripe sandbox", "connect Stripe", "put the Stripe secret key in Vercel", "set up the Stripe webhook endpoint", "promote my admin user", "create an admin account", or when `m2.1-buyer-to-admin-payments` / `-checklist` detects Stripe isn't connected or no admin exists.
+description: One-time setup before Milestone 2.1 of the barber booking platform — an INTERACTIVE, agent-driven walkthrough with TWO parts. (1) Set up ALL the pre-code app-runtime wiring so the build stays pure code: connect a Stripe SANDBOX account via the Stripe MCP / CLI and verify `livemode:false` (the consent page defaults to LIVE — you must switch to sandbox), put its `STRIPE_SECRET_KEY` (`sk_test_…`) in Vercel env (A4), create the webhook endpoint against `https://<vercel-url>/api/stripe/webhook` (event `checkout.session.completed`) + put `STRIPE_WEBHOOK_SECRET` (`whsec_…`) in Vercel env (A5) — the endpoint won't deliver until the build ships the route, tested in M2.1 Step 9, which is expected — and put `SUPABASE_SECRET_KEY` (the Supabase `sb_secret_…` service-role key both serverless functions need to write past RLS; never `VITE_`-prefixed) in Vercel env (A6), then redeploy. (2) Promote ONE existing account to `role='admin'` — there is no public admin sign-up; the person signs up normally via /login, you find them with SELECT id,email,role FROM profiles, and promote them with a ONE-OFF Supabase migration (UPDATE public.profiles SET role='admin') applied via `mcp__claude_ai_Supabase__apply_migration`. Admin lives in THIS prereq because admin only matters once payment exists (the later payout/settlement work consumes it). Manual, dashboard-only actions the student MUST do (you can't): WHICH email to promote to admin, and — since Vercel MCP doesn't manage env vars and Stripe MCP doesn't manage webhook endpoints — the three Vercel env vars + the webhook endpoint. Use when the student starts M2.1, says "啟動 M2.1 的前置作業", "set up Stripe sandbox", "connect Stripe", "put the Stripe secret key in Vercel", "set up the Stripe webhook endpoint", "add the Supabase service-role key", "promote my admin user", "create an admin account", or when `m2.1-buyer-to-admin-payments` / `-checklist` detects Stripe isn't connected, the service-role key is missing, or no admin exists.
 ---
 
 # M2.1 Prerequisites — Stripe sandbox + promote your admin user (the agent drives)
@@ -9,19 +9,19 @@ description: One-time setup before Milestone 2.1 of the barber booking platform 
 
 This prereq does **two** things, and only two:
 
-1. **Set up all the pre-code Stripe wiring** — connect a Stripe SANDBOX account (verify `livemode:false`), then do the dashboard/Vercel work so the build stays pure code: put `STRIPE_SECRET_KEY` in Vercel env (A4), and create the webhook endpoint + put `STRIPE_WEBHOOK_SECRET` in Vercel env (A5).
+1. **Set up all the pre-code app-runtime wiring** — connect a Stripe SANDBOX account (verify `livemode:false`), then do the dashboard/Vercel work so the build stays pure code: put `STRIPE_SECRET_KEY` in Vercel env (A4), create the webhook endpoint + put `STRIPE_WEBHOOK_SECRET` in Vercel env (A5), and put `SUPABASE_SECRET_KEY` (the Supabase service-role key both functions need to write past RLS) in Vercel env (A6).
 2. **Promote one existing account to `role='admin'`** via a one-off migration.
 
 > **What the student MUST do by hand (you can't perform these).** Everything else you do yourself, but these depend on a human decision/action:
 > - **Which email to promote to admin** — you can't guess it; ask, then promote exactly that one account (Part B).
-> - **The two Vercel env vars + the webhook endpoint** — Vercel MCP doesn't manage env vars and Stripe MCP doesn't manage webhook endpoints (2026), so the student does these in the dashboards and confirms back: `STRIPE_SECRET_KEY` (A4), the webhook endpoint against the Vercel URL, and `STRIPE_WEBHOOK_SECRET` (A5).
+> - **The three Vercel env vars + the webhook endpoint** — Vercel MCP doesn't manage env vars and Stripe MCP doesn't manage webhook endpoints (2026), so the student does these in the dashboards and confirms back: `STRIPE_SECRET_KEY` (A4), the webhook endpoint against the Vercel URL + `STRIPE_WEBHOOK_SECRET` (A5), and `SUPABASE_SECRET_KEY` (A6).
 >
-> Doing the endpoint + both secrets here means M2.1's build is pure code — no dashboard trips mid-build. The webhook won't *deliver* until the build ships the route (tested in M2.1 Step 9); that's expected.
+> Doing the endpoint + all three secrets here means M2.1's build is pure code — no dashboard trips mid-build. The webhook won't *deliver* until the build ships the route (tested in M2.1 Step 9); that's expected.
 
 > **Why admin lives in THIS prereq.** The `admin` role only becomes *meaningful once money exists* — an admin's entire job is the month-end payout reconciliation, which needs paid bookings to reconcile. So the course promotes the admin here, in the payment milestone, right before the settlement work consumes it. There is **no public "sign up as admin" UI** — promotion happens exactly once, through a migration *you* run, which is also why a user can never self-escalate.
 
 **Opening line to the student (say something like):**
-> "M2.1 needs some setup before we wire payments: first I'll connect your **Stripe sandbox** account (test mode — no real money) and we'll get all the Stripe keys + the webhook endpoint into Vercel up front, then we'll **promote one account to admin**. I'll need a few things from you along the way — which email should become the admin, and confirmations that the two Stripe secrets + the webhook endpoint are saved (those live in dashboards I can't touch). Two parts, one at a time. Let's start with Stripe."
+> "M2.1 needs some setup before we wire payments: first I'll connect your **Stripe sandbox** account (test mode — no real money) and we'll get all the Stripe keys + the webhook endpoint + the Supabase service-role key into Vercel up front, then we'll **promote one account to admin**. I'll need a few things from you along the way — which email should become the admin, and confirmations that the two Stripe secrets, the webhook endpoint, and the Supabase secret key are saved (those live in dashboards I can't touch). Two parts, one at a time. Let's start with Stripe."
 
 ---
 
@@ -96,7 +96,20 @@ Create the Stripe webhook endpoint now and stash its `whsec_…` in Vercel too �
 
 > **Note for Claude Code:** you are **not** testing event delivery here — you can't, because the `/api/stripe/webhook` route doesn't exist until M2.1 Step 6/7 ships and Vercel redeploys. Until then the endpoint will show failed/404 deliveries in the Stripe dashboard, which is **expected**; the real end-to-end delivery test (test card → `paid`) is M2.1 **Step 9**. This dashboard-endpoint `whsec_…` is **stable** (rolls only if you click "Roll"), and is **different** from the `stripe listen` CLI secret, which rotates each restart and is only for local dev ([[stripe-best-practice]] Rule 4). When M3 later attaches a custom domain, you create a *new* endpoint on that domain — this Vercel-URL one doesn't auto-follow.
 
-**Tell the student:** "✅ Stripe connected in **sandbox** (`livemode:false`) — test cards only, no real money — and both `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are in Vercel env, with the webhook endpoint registered against your Vercel URL. (It won't successfully deliver until M2.1 builds the route — that's expected.) Now let's make your admin account."
+### A6 — Put `SUPABASE_SECRET_KEY` (the service-role key) in Vercel env
+
+M2.1's two serverless functions (checkout + webhook) must write to Supabase as a **trusted server, not a logged-in user** — Stripe carries no user session — so they need the Supabase **service-role / secret key** to write **past RLS**. Without it the webhook can't flip a booking to `paid` and checkout can't read the pending booking. Set it up front here so the build stays pure code. Like the Stripe keys, this is a manual dashboard action (Vercel MCP doesn't manage env vars in 2026) — the student pastes it and confirms back.
+
+> **在 Supabase 拿 service-role key：** 進 **Supabase → 你的專案 → Project Settings → API** → 複製 **service_role / secret key**（`sb_secret_…` — 標成 *secret*、**不是** anon/publishable 的那把）。
+> **加到 Vercel 環境變數：** 進 **Vercel → 你的專案 → Settings → Environment Variables** → 新增：
+> - **Key**：`SUPABASE_SECRET_KEY`
+> - **Value**：`sb_secret_xxxxx`
+> - **Scope**：Production
+> 存檔後**點 Redeploy**（環境變數在 build/啟動時才讀）。
+
+> **⚠️ Never `VITE_`-prefix it.** A `VITE_`-prefixed var is inlined into the **browser bundle** — a service-role key there is a full-database leak (it bypasses RLS). `SUPABASE_SECRET_KEY` is **server-only**, read only by the checkout + webhook functions. Like the Stripe keys it is an **app-runtime secret → Vercel env, NOT AWS Secrets Manager** ([[aws-secrets-best-practice]]).
+
+**Tell the student:** "✅ Stripe connected in **sandbox** (`livemode:false`) — test cards only, no real money — and `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `SUPABASE_SECRET_KEY` are all in Vercel env, with the webhook endpoint registered against your Vercel URL and a redeploy done. (The webhook won't successfully deliver until M2.1 builds the route — that's expected.) Now let's make your admin account."
 
 ---
 
@@ -156,6 +169,7 @@ SELECT id, email, role FROM public.profiles WHERE email = '<your-email>';   -- r
 - ✅ **Stripe connected in sandbox** — a read call returns `livemode: false`; the key in play is `sk_test_…` (NOT `sk_live_…`).
 - ✅ **`STRIPE_SECRET_KEY` in Vercel env (student-confirmed)** — the sandbox `sk_test_…` is saved as a Production env var (A4 — you can't read it, the student confirms it).
 - ✅ **Webhook endpoint created + `STRIPE_WEBHOOK_SECRET` in Vercel env (student-confirmed)** — the dashboard endpoint points at `https://<vercel-url>/api/stripe/webhook`, subscribes only `checkout.session.completed`, and its `whsec_…` is saved as a Production env var (A5). **It won't successfully deliver until M2.1 builds the route + redeploys — that's expected**; the delivery test is M2.1 Step 9, NOT here.
+- ✅ **`SUPABASE_SECRET_KEY` in Vercel env + redeploy done (student-confirmed)** — the Supabase **service-role / secret key** (`sb_secret_…`) is saved as a Production env var (A6) and a redeploy has happened, so M2.1's checkout + webhook functions can write **past RLS**. It is **not** `VITE_`-prefixed (that would leak a full-database key into the browser bundle) — it's server-only.
 - ✅ **You know the two webhook-secret sources** — `stripe listen` (rotating, local) ≠ this dashboard endpoint (stable, Vercel prod); the build uses the dashboard one you just created ([[stripe-best-practice]] Rule 4).
 - ✅ **The student told you WHICH email to promote** — you promoted exactly that one account.
 - ✅ **Exactly one account promoted** — `SELECT ... WHERE email=...` shows `role='admin'`, applied via `apply_migration` (in the migration history), not a console edit.
@@ -164,7 +178,7 @@ SELECT id, email, role FROM public.profiles WHERE email = '<your-email>';   -- r
 ## Next step
 
 When all are green, tell the student:
-「前置作業完成 ✅ — Stripe 已連到 sandbox（`livemode:false`，只用測試卡），`STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET` 都放進 Vercel env、webhook 端點也建好指向你的 Vercel 網址（在 build 把路由做出來、重新部署後才會真的收到事件，先失敗是正常的），而且你已經有一個 `role='admin'` 的帳號了。回到 `m2.1-buyer-to-admin-payments`，跟我說『啟動 M2.1』，我們來接 Stripe Checkout、做付款 webhook，把預約變成『付款成功才確認』。」
+「前置作業完成 ✅ — Stripe 已連到 sandbox（`livemode:false`，只用測試卡），`STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`SUPABASE_SECRET_KEY`（service-role key，讓後端函式能繞過 RLS 寫入）都放進 Vercel env、webhook 端點也建好指向你的 Vercel 網址、也 redeploy 過了（在 build 把路由做出來、再重新部署後才會真的收到事件，先失敗是正常的），而且你已經有一個 `role='admin'` 的帳號了。回到 `m2.1-buyer-to-admin-payments`，跟我說『啟動 M2.1』，我們來接 Stripe Checkout、做付款 webhook，把預約變成『付款成功才確認』。」
 Then return to the build skill `m2.1-buyer-to-admin-payments`.
 
 ## Reference

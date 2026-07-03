@@ -1,6 +1,6 @@
 ---
 name: m2.1-buyer-to-admin-payments
-description: 抽成制理髮師預約平台 Milestone 2.1 — wire Stripe Checkout so booking = pay-now. Customer confirms a start slot in the M1.2 pop-up dialog → `POST /api/bookings/checkout` creates a Stripe Checkout Session with a DYNAMIC `price_data` line item (`unit_amount` honors `platform_settings.currency_minor_units` — TWD's default config is ×1, USD would be ×100), metadata + `client_reference_id` carry `{booking_id,customer_id}` (the booking_id is the join key; the barber/slots are derivable from the booking — there is NO stored start_slot_id), redirect to checkout.stripe.com. The `POST /api/stripe/webhook` route (raw-body verify, idempotent via a status guard) flips the BOOKING `pending_payment→paid` on `checkout.session.completed` + `payment_status==='paid'` (first to pay wins; slots have no status to flip) and STAMPS `paid_at` — that's it; NO split is computed and there is NO transactions row (no transactions table). The split is computed later at payout-build time (M2.2) from the picked paid bookings × commission_rates, NOT here. Step 2 creates ONLY the `commission_rates` table (versioned 20% ratio). Use when the student says "啟動 M2.1", "start M2.1", "接 Stripe 金流", "讓預約可以付款", "booking payment", or any variant of "預約時要先付款". Run `m2.1-buyer-to-admin-payments-prerequisites` first (Stripe sandbox auth + promote your admin user).
+description: 抽成制理髮師預約平台 Milestone 2.1 — wire Stripe Checkout so booking = pay-now. Customer confirms a start slot in the M1.2 pop-up dialog → `POST /api/bookings/checkout` creates a Stripe Checkout Session with a DYNAMIC `price_data` line item (`unit_amount = price` scaled into Stripe's smallest unit — TWD is 2-decimal, so ×100 — NOT driven off currency_minor_units, which is display-only), metadata + `client_reference_id` carry `{booking_id,customer_id}` (the booking_id is the join key; the barber/slots are derivable from the booking — there is NO stored start_slot_id), redirect to checkout.stripe.com. The `POST /api/stripe/webhook` route (raw-body verify, idempotent via a status guard) flips the BOOKING `pending_payment→paid` on `checkout.session.completed` + `payment_status==='paid'` (first to pay wins; slots have no status to flip) and STAMPS `paid_at` — that's it; NO split is computed and there is NO transactions row (no transactions table). The split is computed later at payout-build time (M2.2) from the picked paid bookings × commission_rates, NOT here. Step 2 creates ONLY the `commission_rates` table (versioned 20% ratio). Works for both Next.js App Router and Lovable's Vite-SPA (Vercel serverless functions) scaffold. Use when the student says "啟動 M2.1", "start M2.1", "接 Stripe 金流", "讓預約可以付款", "booking payment", or any variant of "預約時要先付款". Run `m2.1-buyer-to-admin-payments-prerequisites` first (Stripe sandbox auth + SUPABASE_SECRET_KEY + promote your admin user).
 ---
 
 # M2.1 — Stripe 預約金流（預約即付款，付款成功才鎖位）
@@ -11,7 +11,7 @@ Turns the M1.2 booking flow from "create a pending booking" into **pay-now via S
 
 By the end the student has:
 
-1. A `POST /api/bookings/checkout` route that takes a `pending_payment` booking and creates a **dynamic `price_data` Checkout Session** — `unit_amount = bookings.price * 10^currency_minor_units` (the `price` snapshot from M1.2, scaled per `platform_settings.currency_minor_units`; with the default TWD config that's ×1), `currency` read from `platform_settings.currency`, `metadata: { booking_id, customer_id }` + `client_reference_id: booking_id` (the `booking_id` is the only join key the webhook needs; the barber/slots are derivable from the booking via `service_id → services.barber_id` and `booking_slots` — there is **no stored `start_slot_id`**), then redirects the browser to `checkout.stripe.com`.
+1. A `POST /api/bookings/checkout` route that takes a `pending_payment` booking and creates a **dynamic `price_data` Checkout Session** — `unit_amount = bookings.price × factor` (the `price` snapshot from M1.2, scaled into Stripe's smallest unit; **TWD is 2-decimal in Stripe, so factor = 100** — a NT$300 cut → `30000`; only true zero-decimal currencies like JPY use ×1), `currency` read from `platform_settings.currency`, `metadata: { booking_id, customer_id }` + `client_reference_id: booking_id` (the `booking_id` is the only join key the webhook needs; the barber/slots are derivable from the booking via `service_id → services.barber_id` and `booking_slots` — there is **no stored `start_slot_id`**), then redirects the browser to `checkout.stripe.com`.
 2. A `POST /api/stripe/webhook` route that **reads the raw body**, verifies the Stripe signature, is **idempotent via the `pending_payment` status guard**, and on `checkout.session.completed` + `payment_status==='paid'` flips the **booking** `pending_payment → paid` (**first customer to pay wins**; no slot status to touch) and stamps `paid_at`. **No split, no transactions row** — M2.2 computes the split at payout-build time from the picked paid bookings.
 2a. New **`commission_rates`** table (Step 2) — the versioned 20% ratio, seeded `2026-01-01 = 0.20`. (No transactions table; no fee columns on bookings; no `payout_records` table.)
 3. **Middleware exempts `/api/stripe/webhook`** (otherwise auth middleware 307-redirects Stripe's events to `/login` and your handler never runs).
@@ -45,7 +45,7 @@ The genuinely-manual steps — **creating the webhook endpoint in the Stripe das
 
 ## Architecture
 
-![Barber platform architecture (M2.1) — the customer confirms a start slot in the booking dialog on /barbers/[id]; the browser calls POST /api/bookings/checkout, which reads the pending_payment bookings row (price snapshot) from Supabase and creates a dynamic Stripe Checkout Session (price_data with unit_amount scaled by platform_settings.currency_minor_units, metadata {booking_id,customer_id} + client_reference_id; the barber/slots are derivable from the booking — no stored start_slot_id), then redirects to checkout.stripe.com. Stripe collects 100% into the platform's own account. On payment, Stripe POSTs checkout.session.completed to POST /api/stripe/webhook (middleware EXEMPTS this path); the webhook verifies the raw-body signature, is idempotent via the pending_payment status guard, flips the bookings row pending_payment→paid (slots have no status), and stamps paid_at. No transactions row is written and no split is stored on the booking — M2.2 computes platform 20% / shop 80% at payout-build time from the picked paid bookings × commission_rates. The browser lands on /bookings/success, which only POLLS the bookings row. Env vars STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET live in Vercel; the dashboard webhook endpoint points at the Vercel URL.](assets/architecture-m2.1.png)
+![Barber platform architecture (M2.1) — the customer confirms a start slot in the booking dialog on /barbers/[id]; the browser calls POST /api/bookings/checkout, which reads the pending_payment bookings row (price snapshot) from Supabase and creates a dynamic Stripe Checkout Session (price_data with unit_amount = price scaled into Stripe's smallest unit — TWD is 2-decimal so ×100, NOT driven off currency_minor_units; metadata {booking_id,customer_id} + client_reference_id; the barber/slots are derivable from the booking — no stored start_slot_id), then redirects to checkout.stripe.com. Stripe collects 100% into the platform's own account. On payment, Stripe POSTs checkout.session.completed to POST /api/stripe/webhook (middleware EXEMPTS this path); the webhook verifies the raw-body signature, is idempotent via the pending_payment status guard, flips the bookings row pending_payment→paid (slots have no status), and stamps paid_at. No transactions row is written and no split is stored on the booking — M2.2 computes platform 20% / shop 80% at payout-build time from the picked paid bookings × commission_rates. The browser lands on /bookings/success, which only POLLS the bookings row. Env vars STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET + SUPABASE_SECRET_KEY (the service-role key both functions use to write past RLS) live in Vercel; the dashboard webhook endpoint points at the Vercel URL.](assets/architecture-m2.1.png)
 
 How the diagram maps to M2.1:
 - **The bottom-left "charge booking" inset = the customer's pay-at-booking loop:** Product Site (`/api/bookings/checkout`) → Stripe Checkout, the `webhook` comes back, and the Product Site then **writes** (`W`) the `booking` row. It's the same round-trip drawn at the top (`payment check` → Stripe `Webhook` → `booking`), just zoomed in — the top view emphasizes that confirmation is **delayed**: you (admin) only know the payment truly landed once Stripe's webhook event arrives, not at redirect time.
@@ -66,10 +66,17 @@ You (Claude Code) **implement every step you can yourself, in order — do NOT w
 
 Everything else — the `commission_rates` migration, both API routes, the dialog rewire, the middleware exemption, the success page, and all verification — you do and check yourself. Report what you did and what you verified as you go.
 
-1. Confirm the prereq is green (Stripe sandbox auth + admin promoted)
+> **FIRST: detect the scaffold — Next.js App Router vs Lovable's Vite-SPA.** The code blocks below are written for **Next.js App Router** (`app/api/**/route.ts`, `middleware.ts`, `await req.text()`). But **Lovable scaffolds a client-only Vite + React SPA** — no server runtime, no `app/`, no `middleware.ts`. Check for `vite.config.*` / an `index.html` entry / `"type": "module"` in `package.json` before writing any route. If it's Vite, translate every route to the **Vite-SPA track** ([[stripe-best-practice]] Rule 2's Vite variant has the full pattern):
+> - **Server routes = Vercel serverless functions** in a top-level `/api` dir: `export default function handler(req: VercelRequest, res: VercelResponse)`. Add the `stripe` + `@vercel/node` deps. (So `app/api/bookings/checkout/route.ts` → `api/bookings/checkout.ts`, `app/api/stripe/webhook/route.ts` → `api/stripe/webhook.ts`.)
+> - **Webhook raw body:** a Vercel Node function auto-parses the body, so set `export const config = { api: { bodyParser: false } }` **and** buffer the raw stream yourself (helper in Rule 2) — App Router's `await req.text()` does **not** apply.
+> - **Step 7's "middleware exemption" becomes the `vercel.json` SPA rewrite.** There's no middleware; the catch-all rewrite that serves `index.html` will otherwise swallow `/api/*`. Exclude it: `"rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }]`.
+> - **ESM import gotcha (runtime-only — green `vite build`, 500 in prod):** `"type": "module"` + Vercel transpiling each `/api/*.ts` separately means a relative import needs the **`.js` extension** — `import { x } from '../_supabaseAdmin.js'` — or the function 500s with `ERR_MODULE_NOT_FOUND`.
+> - **Opaque Supabase keys:** new-format `sb_secret_…` keys are not JWTs — the server service-role client needs the same `apikey`-header fetch shim the browser client uses, or requests are unauthorized.
+
+1. Confirm the prereq is green (Stripe sandbox auth + `SUPABASE_SECRET_KEY` + admin promoted)
 2. Create the `commission_rates` table (migration)
-3. Confirm `STRIPE_SECRET_KEY` is already in Vercel env (set in the prereq)
-4. Build `POST /api/bookings/checkout` (dynamic, `unit_amount` honors `currency_minor_units`)
+3. Confirm `STRIPE_SECRET_KEY` + `SUPABASE_SECRET_KEY` are already in Vercel env (set in the prereq)
+4. Build `POST /api/bookings/checkout` (dynamic, `unit_amount` scaled into Stripe's smallest unit — TWD ×100)
 5. Rewire the M1.2 dialog confirm → launch Checkout
 6. Build `POST /api/stripe/webhook` (raw-body verify, idempotent, flip pending_payment → paid + stamp paid_at)
 7. Exempt `/api/stripe/webhook` in middleware
@@ -90,7 +97,7 @@ If either is missing, stop and run the prereq. The admin account isn't used *in*
 
 ### Step 2 — Create the `commission_rates` table (migration)
 
-There is **NO `transactions` table** — "money in" is simply a `paid` booking's `price`. M2.1 adds exactly **one** table: **`commission_rates`**, the versioned 20% ratio. The split is **NOT** stored per booking and **NOT** computed by the webhook — it's derived at payout-build time (M2.2) by summing the admin's picked `paid` bookings × the rate in `commission_rates` (a versioned constant), and snapshotted onto the `payouts` batch row. `bookings` already has its `paid_at` column from M1.2's schema. (`platform_settings` is created back in M1.1 — M2.1 only *reads* it for the currency math, it does not create it here.) Apply as a **migration** (never a raw console edit — [[supabase-best-practice]]) via `mcp__claude_ai_Supabase__apply_migration`:
+There is **NO `transactions` table** — "money in" is simply a `paid` booking's `price`. M2.1 adds exactly **one** table (**`commission_rates`**, the versioned 20% ratio) plus **one column** on `bookings` (`stripe_payment_intent_id`, UNIQUE — the reconciliation pointer + idempotency backstop the webhook stamps). The split is **NOT** stored per booking and **NOT** computed by the webhook — it's derived at payout-build time (M2.2) by summing the admin's picked `paid` bookings × the rate in `commission_rates` (a versioned constant), and snapshotted onto the `payouts` batch row. `bookings` already has its `paid_at` column from M1.2's schema. (`platform_settings` is created back in M1.1 — M2.1 only *reads* it for the currency math, it does not create it here.) Apply as a **migration** (never a raw console edit — [[supabase-best-practice]]) via `mcp__claude_ai_Supabase__apply_migration`:
 
 ```sql
 -- M2.1: the versioned commission ratio. "The rate for a booking" = the row with the greatest
@@ -111,27 +118,34 @@ alter table public.commission_rates enable row level security;
 -- commission_rates: world-readable (it's just the public ratio); only admin writes it.
 create policy "commission_rates_select_public" on public.commission_rates for select using (true);
 create policy "commission_rates_write_admin"  on public.commission_rates for all using (public.is_admin());
+
+-- bookings.stripe_payment_intent_id: the webhook stamps session.payment_intent on the paid flip.
+-- It is (a) a hard idempotency backstop — the UNIQUE index rejects a concurrent double-fire that
+-- slips past the status guard — and (b) a refund/reconciliation pointer back to the Stripe payment
+-- (read it back via the Stripe MCP fetch_stripe_resources(pi_…) — no read-proxy Lambda needed).
+alter table public.bookings add column if not exists stripe_payment_intent_id text;
+create unique index if not exists uniq_bookings_pi on public.bookings(stripe_payment_intent_id);
 ```
 
-> **Note for Claude Code:** there is **deliberately no per-booking ledger** — `bookings` carries no `platform_fee`/`barber_amount`, and there is **no `transactions` table** to insert into. The webhook (Step 6) only flips `bookings.status` to `paid` and stamps `paid_at`; "money in" = the `paid` booking's `price` snapshot (M1.2). M2.2 computes `platform_cut` / `shop_cut` at payout-build time by summing the admin's picked `paid` bookings × `commission_rates`, and snapshots the rate onto the `payouts` batch so a later rate change never alters a settled batch. After applying, run `get_advisors`.
+> **Note for Claude Code:** there is **deliberately no per-booking ledger** — `bookings` carries no `platform_fee`/`barber_amount`, and there is **no `transactions` table** to insert into. The webhook (Step 6) only flips `bookings.status` to `paid`, stamps `paid_at`, and records `stripe_payment_intent_id`; "money in" = the `paid` booking's `price` snapshot (M1.2). The `stripe_payment_intent_id` is not money data — it's a pointer to the Stripe payment for **reconciliation** (verify the charged amount via the Stripe MCP's PaymentIntent/Charge reads keyed off it) and a **hard idempotency backstop** (the UNIQUE index). M2.2 computes `platform_cut` / `shop_cut` at payout-build time by summing the admin's picked `paid` bookings × `commission_rates`, and snapshots the rate onto the `payouts` batch so a later rate change never alters a settled batch. After applying, run `get_advisors`.
 
 ---
 
-### Step 3 — Confirm `STRIPE_SECRET_KEY` is already in Vercel env
+### Step 3 — Confirm `STRIPE_SECRET_KEY` and `SUPABASE_SECRET_KEY` are already in Vercel env
 
-`STRIPE_SECRET_KEY` (`sk_test_…`) is set **in the prerequisite**, right after the Stripe sandbox is connected ([[m2.1-buyer-to-admin-payments-prerequisites]] Part A) — it's a pure "copy the sandbox secret key into Vercel env" action with no dependency on M2.1 code, so it lives with the rest of the Stripe setup. **Here you only confirm it's there:**
+`STRIPE_SECRET_KEY` (`sk_test_…`) and `SUPABASE_SECRET_KEY` (the Supabase **service-role / secret key**, `sb_secret_…`) are both set **in the prerequisite** ([[m2.1-buyer-to-admin-payments-prerequisites]] Part A: A4 + A6) — they're pure "copy the key into Vercel env" actions with no dependency on M2.1 code, so they live with the rest of the pre-code setup. **Here you only confirm they're there:**
 
-> 到 **Vercel → Settings → Environment Variables**，確認 `STRIPE_SECRET_KEY`（`sk_test_…`，Production scope）已經在前置作業裡設好了。如果不在，回 `m2.1-buyer-to-admin-payments-prerequisites` 補上再回來。
+> 到 **Vercel → Settings → Environment Variables**，確認 `STRIPE_SECRET_KEY`（`sk_test_…`）和 `SUPABASE_SECRET_KEY`（`sb_secret_…`，Supabase service-role/secret key）都在（Production scope），是前置作業裡設好的。少任何一個就回 `m2.1-buyer-to-admin-payments-prerequisites` 補上再回來。
 
-`STRIPE_WEBHOOK_SECRET` is **also set in the prereq** (A5, created with the webhook endpoint) — Step 8 just confirms it and redeploys. Both are **app-runtime keys → Vercel env, NOT AWS Secrets Manager** ([[aws-secrets-best-practice]]; AWS holds only operational/dev secrets like the GitHub PAT). The Stripe secret key is server-only — it never ships in the browser bundle.
+`SUPABASE_SECRET_KEY` is **required by both serverless functions** (checkout + webhook): Stripe is not a logged-in user, so the functions must use the **service-role key to write past RLS** — without it the webhook can't flip a booking to `paid` and checkout can't read the pending booking. **Never `VITE_`-prefix it** — Vite would inline it into the browser bundle (a full-database key leak); it is server-only. `STRIPE_WEBHOOK_SECRET` is **also set in the prereq** (A5, created with the webhook endpoint) — Step 8 just confirms it and redeploys. All three are **app-runtime keys → Vercel env, NOT AWS Secrets Manager** ([[aws-secrets-best-practice]]; AWS holds only operational/dev secrets like the GitHub PAT). None ships in the browser bundle.
 
-> **Note for Claude Code:** Vercel MCP does **not** manage env vars in 2026, so you can't read the var directly — ask the student to confirm it's present (or spot it by the checkout route working once deployed). If it was only *just* added, remember a **redeploy** is required for it to take effect.
+> **Note for Claude Code:** Vercel MCP does **not** manage env vars in 2026, so you can't read these directly — ask the student to confirm they're present (or spot them by the checkout route working once deployed). If any was only *just* added, remember a **redeploy** is required for it to take effect.
 
 ---
 
-### Step 4 — Build `POST /api/bookings/checkout` (dynamic, `unit_amount` honors `currency_minor_units`)
+### Step 4 — Build `POST /api/bookings/checkout` (dynamic, `unit_amount` scaled into Stripe's smallest unit — TWD is 2-decimal → ×100)
 
-The route takes a `pending_payment` booking the dialog created, reads its `price` snapshot server-side, and builds a **dynamic** Checkout Session. The Stripe `unit_amount` is `price * 10^currency_minor_units`, with `currency` + `currency_minor_units` read from `platform_settings` — **not** a hard-coded assumption. With the default TWD config (`currency_minor_units = 0`) that's `price × 1`; a USD config (`= 2`) would be `× 100`. Have Claude Code write it, then push (recall the GitHub PAT from Secrets Manager — don't re-ask):
+The route takes a `pending_payment` booking the dialog created, reads its `price` snapshot server-side, and builds a **dynamic** Checkout Session. The Stripe `unit_amount` is the whole-unit `price` scaled into **Stripe's smallest unit for the currency**: **TWD is a 2-decimal currency in Stripe** (NOT on Stripe's zero-decimal list), so `unit_amount = price × 100` — a NT$300 cut → `30000` (= NT$300.00). Only Stripe's *true* zero-decimal currencies (`jpy`, `krw`, …) use `× 1`. **Do NOT drive the factor off `platform_settings.currency_minor_units`** — that column is a *display* concept (`0` = show whole TWD), a different thing from Stripe's per-currency exponent; scale off the zero-decimal set below. Have Claude Code write it, then push (recall the GitHub PAT from Secrets Manager — don't re-ask):
 
 ```ts
 // app/api/bookings/checkout/route.ts  (Next.js App Router)
@@ -161,13 +175,17 @@ export async function POST(req: Request) {
   const barberId   = booking.services.barber_id               // derived via the service
   const barberName = booking.services.barbers.name
 
-  // Read currency + minor-units from platform_settings (created in M1.1) — do NOT hard-code TWD.
+  // Read the currency from platform_settings (created in M1.1) — do NOT hard-code TWD.
   const { data: cfg } = await supabase
     .from('platform_settings')
-    .select('currency, currency_minor_units')
+    .select('currency')
     .single()
-  // unit_amount = price scaled into Stripe's smallest unit. TWD (minor_units=0) → ×1; USD (=2) → ×100.
-  const unitAmount = booking.price * 10 ** cfg!.currency_minor_units
+  // unit_amount = price scaled into STRIPE's smallest unit for the currency.
+  // TWD is 2-decimal in Stripe → ×100 (NT$300 → 30000). Only true zero-decimal currencies use ×1.
+  // Do NOT use currency_minor_units here — that's a DISPLAY concept, not Stripe's exponent.
+  const ZERO_DECIMAL = new Set(['bif','clp','djf','gnf','jpy','kmf','krw','mga','pyg','rwf','vnd','vuv','xaf','xof','xpf'])
+  const factor = ZERO_DECIMAL.has(cfg!.currency.toLowerCase()) ? 1 : 100
+  const unitAmount = booking.price * factor
 
   const origin = req.headers.get('origin')!
   const session = await stripe.checkout.sessions.create({
@@ -176,7 +194,7 @@ export async function POST(req: Request) {
       price_data: {
         currency: cfg!.currency,            // from platform_settings (default 'twd')
         product_data: { name: `${booking.services.name} @ ${barberName}` },
-        unit_amount: unitAmount,            // price * 10^currency_minor_units (TWD default config → ×1, NOT ×100)
+        unit_amount: unitAmount,            // TWD 300 → 30000 (NT$300.00); NOT 300 (that's NT$3.00 → rejected)
       },
       quantity: 1,
     }],
@@ -193,7 +211,7 @@ export async function POST(req: Request) {
 }
 ```
 
-> **Note for Claude Code:** the **`unit_amount` scaling** is the #1 foot-gun — drive it off `platform_settings.currency_minor_units`, never a hard-coded ×100. With the **default TWD config (`currency_minor_units = 0`)** a NT$500 cut is `unit_amount: 500`, **NOT** `50000` — TWD is zero-decimal. A USD config (`= 2`) would correctly scale ×100. If a student blindly copied a USD (cents) example, a TWD booking charges 100× too much. Cross-reference the user's existing `stripe-mysite` skill for the same TWD handling. Stash `booking_id` in **BOTH** `metadata` and `client_reference_id` ([[stripe-best-practice]] Rule 6) — the webhook reads `metadata.booking_id`, which your authed server set and the customer cannot forge (Rule 10); the barber/slots are derivable from the booking, so they don't go in the metadata. Never look the booking up by email/customer.
+> **Note for Claude Code:** the **`unit_amount` scaling** is the #1 foot-gun — scale by Stripe's smallest-unit factor for the currency, and **do NOT drive it off `platform_settings.currency_minor_units`** (that's display-only, a *different* thing from Stripe's exponent). **TWD is 2-decimal in Stripe**, so `factor = 100`: a NT$300 cut is `unit_amount: 30000` (= NT$300.00). The wrong version here is the *reverse* of the usual reflex — someone "knows TWD looks like whole dollars" and sends `× 1` → `300` = **NT$3.00 ≈ US$0.10**, which is **below Stripe's ~US$0.50 minimum, so the Checkout Session is rejected and the customer never reaches the payment page** (empirically confirmed: `price 300 → 30000 → succeeded`; `× 1 → 300 → rejected`). Verify by reading the charged `amount` on the PaymentIntent/Charge, not by eyeballing. **Do NOT copy `stripe-mysite`'s TWD handling if it treats TWD as zero-decimal** — that's the same inverted bug. Stash `booking_id` in **BOTH** `metadata` and `client_reference_id` ([[stripe-best-practice]] Rule 6) — the webhook reads `metadata.booking_id`, which your authed server set and the customer cannot forge (Rule 10); the barber/slots are derivable from the booking, so they don't go in the metadata. Never look the booking up by email/customer.
 
 ---
 
@@ -262,6 +280,7 @@ export async function POST(req: Request) {
   await supabase.from('bookings').update({
     status: 'paid',
     paid_at: new Date().toISOString(),
+    stripe_payment_intent_id: session.payment_intent as string, // reconciliation pointer + idempotency backstop
   }).eq('id', bookingId).eq('status', 'pending_payment') // guard: only the pending_payment row flips
 
   return NextResponse.json({ received: true })
@@ -269,8 +288,8 @@ export async function POST(req: Request) {
 ```
 
 > **Note for Claude Code:** four rules from [[stripe-best-practice]] are load-bearing here:
-> - **Rule 2 raw-body verify:** `await req.text()` BEFORE `constructEvent`. `req.json()` re-serializes and breaks the HMAC → 400. (In the App Router the raw text is available directly; no `bodyParser:false` config needed as in the old Pages API.)
-> - **Rule 3 idempotency via the status guard:** the `.eq('status','pending_payment')` guard makes the flip a no-op once the booking is already `paid`. Stripe retries non-2xx, and you'll resend the event in the checklist — a second delivery matches zero rows and must NOT re-stamp `paid_at`. (Minimal version uses the status guard; an optional hard backstop is a `bookings.stripe_payment_intent_id` unique column.)
+> - **Rule 2 raw-body verify:** `await req.text()` BEFORE `constructEvent`. `req.json()` re-serializes and breaks the HMAC → 400. (In the App Router the raw text is available directly; no `bodyParser:false` config needed as in the old Pages API.) **Vite-SPA track:** this is a Vercel serverless function instead — set `export const config = { api: { bodyParser: false } }` and buffer the raw stream yourself (`for await (const chunk of req) …`); App Router's `req.text()` does not apply. See the scaffold callout above + [[stripe-best-practice]] Rule 2's Vite variant.
+> - **Rule 3 idempotency via the status guard:** the `.eq('status','pending_payment')` guard makes the flip a no-op once the booking is already `paid`. Stripe retries non-2xx, and a re-delivery matches zero rows and must NOT re-stamp `paid_at`. The `bookings.stripe_payment_intent_id` UNIQUE index (added in Step 2) is a **hard backstop** on top of the status guard — a concurrent double-fire that raced past the status check fails the UNIQUE write.
 > - **Rule 1 webhook is the source of truth:** only this route writes `paid`. The success page never mutates.
 > - **Rule 9 state change exactly once at the right transition:** flip only on `checkout.session.completed` + `payment_status==='paid'`. The `.eq('status','pending_payment')` guard makes the flip safe under retries. The webhook does NOT compute any split — that's M2.2.
 
@@ -290,7 +309,9 @@ export const config = {
 }
 ```
 
-> **Note for Claude Code:** verify with `curl -i -X POST https://<app>.vercel.app/api/stripe/webhook` — you want a **400** (signature missing/invalid, i.e. the handler ran) or **200**, **NOT a 307** redirect to `/login`. A 307 means the exemption didn't take. ([[stripe-best-practice]] Rule 5.)
+> **Vite-SPA track:** there is **no `middleware.ts`** — the equivalent trap is the `vercel.json` SPA catch-all rewrite swallowing `/api/*`. Instead of the matcher above, exclude `/api/` from the rewrite: `{ "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }] }`. Same silent failure (the webhook POST returns the HTML shell / never runs), different mechanism. See the scaffold callout + [[stripe-best-practice]] Rule 5's Vite variant.
+
+> **Note for Claude Code:** verify with `curl -i -X POST https://<app>.vercel.app/api/stripe/webhook` — you want a **400** (signature missing/invalid, i.e. the handler ran) or **200**, **NOT a 307** redirect to `/login` (Next.js) and **not the HTML `index.html` shell** (Vite — means the rewrite swallowed it). ([[stripe-best-practice]] Rule 5.)
 
 ---
 
@@ -313,9 +334,10 @@ The webhook endpoint (`https://<your>.vercel.app/api/stripe/webhook`, event `che
 
 > 在 live Vercel 網站上：以 customer 身分挑一位理髮師 → 開預約彈窗 → 選日期/時段 → 確認 → 跳到 Stripe Checkout → 用測試卡 **`4242 4242 4242 4242`**、任意未來到期日、任意 CVC 付款 → 回到 `/bookings/success`，看到狀態變 `paid`。
 
-Then verify the booking in Supabase and re-test idempotency:
-- `select status, paid_at, price, payout_id from bookings where id = '<id>';` — `status='paid'` + `paid_at` set, `price` unchanged (e.g. `500`), `payout_id` still **NULL** (it's now an OWED booking — M2.2 stamps `payout_id` when the admin builds a payout). There is **no `transactions` table** to query and **no fee columns** on the booking — "money in" is just this `paid` booking's `price`; the split is M2.2's job.
-- In the Stripe dashboard → that event → **Resend** → confirm the webhook returns 200 and `paid_at` does **not** change (the `pending_payment` status guard no-ops the re-delivery — idempotency).
+Then verify the booking in Supabase and confirm the charged amount:
+- `select status, paid_at, price, payout_id, stripe_payment_intent_id from bookings where id = '<id>';` — `status='paid'` + `paid_at` set, `price` unchanged (e.g. `300`), `stripe_payment_intent_id` populated (`pi_…`), `payout_id` still **NULL** (it's now an OWED booking — M2.2 stamps `payout_id` when the admin builds a payout). There is **no `transactions` table** to query and **no fee columns** on the booking — "money in" is just this `paid` booking's `price`; the split is M2.2's job.
+- **Verify the charged amount via the PaymentIntent/Charge, not Checkout Sessions.** Read the payment back through the Stripe MCP (`fetch_stripe_resources(pi_…)` from the stored `stripe_payment_intent_id`, or a PaymentIntent/Charge read) and confirm `amount = price × 100` for TWD (e.g. `30000` = NT$300.00), `status: succeeded`. (On the restricted Cowork key the Checkout Sessions resource is read-denied, but PaymentIntents/Charges reads work — key off the PI, don't list sessions.)
+- **Idempotency** is enforced by the `.eq('status','pending_payment')` status guard (backed by the `stripe_payment_intent_id` UNIQUE index) — a re-delivered event matches zero rows and no-ops. (No manual "resend the event" step is needed; the guard is the source of truth.)
 
 > 「跑 `m2.1-buyer-to-admin-payments-checklist` 驗收。」
 
@@ -325,7 +347,7 @@ Then verify the booking in Supabase and re-test idempotency:
 
 ## Things to watch out for (common mistakes)
 
-1. **Hard-coding the `unit_amount` scale (the worst one).** Drive `unit_amount = price * 10^currency_minor_units` off `platform_settings`, never a hard-coded ×100. With the default **TWD** config (`currency_minor_units = 0`) NT$500 → `500`, not `50000` — TWD is zero-decimal. Copying a USD (cents) example charges 100× too much on TWD. ([[stripe-best-practice]] TWD rule; cross-ref `stripe-mysite`.)
+1. **Getting the `unit_amount` scale wrong (the worst one).** **TWD is 2-decimal in Stripe** → `unit_amount = price × 100` (NT$300 → `30000`). Scale off the zero-decimal set, **NOT** off `platform_settings.currency_minor_units` (that's display-only). The inverted bug (`× 1`) bills NT$3.00 — below Stripe's ~50¢ minimum → the Session is **rejected** and the customer never pays. Copying a "TWD is zero-decimal" example (incl. `stripe-mysite` if it does that) re-introduces this. ([[stripe-best-practice]] Rule 0 — TWD is 2-decimal.)
 2. **`req.json()` before signature verify.** Always `await req.text()` first — re-serialization breaks the HMAC → 400 "signature verification failed". (Rule 2.)
 3. **Middleware not exempting `/api/stripe/webhook`.** Symptom: Stripe shows the event fired but your logs show zero hits (307 → `/login`). Add the matcher exclusion + verify you get 400/200, not 307. (Rule 5.)
 4. **No idempotency.** Stripe retries non-2xx and you'll resend the event in the checklist — without the `.eq('status','pending_payment')` status guard a re-delivery re-stamps `paid_at`. (Rule 3.)
@@ -355,7 +377,7 @@ When `m2.1-buyer-to-admin-payments-checklist` is green, tell the student (milest
 
 - Stripe Checkout Sessions: https://stripe.com/docs/api/checkout/sessions/create
 - Dynamic `price_data`: https://stripe.com/docs/payments/accept-a-payment?integration=checkout
-- Zero-decimal currencies (TWD): https://stripe.com/docs/currencies#zero-decimal
+- Currencies & the smallest-unit exponent (TWD is **2-decimal** → `price × 100`; the list here is the *zero-decimal* exception set TWD is NOT in): https://stripe.com/docs/currencies#zero-decimal
 - Webhook signature verification: https://stripe.com/docs/webhooks/signature
 - Test cards: https://stripe.com/docs/testing
 - Cross-skill: [[stripe-best-practice]] · [[m2.1-buyer-to-admin-payments-prerequisites]] · [[m2.2-admin-to-seller-payment]] · [[supabase-best-practice]] · [[stripe-go-live]]

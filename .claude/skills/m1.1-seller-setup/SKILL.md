@@ -14,7 +14,7 @@ Walks the student through Milestone 1.1 — the **shop side**: a customer become
 By the end the student has:
 
 1. A **"Become a shop" path** — an existing customer can upgrade to a shop, and the M0 sign-up role tab now persists `profiles.role = 'shop'` so the shop surfaces unlock.
-2. A **`platform_settings` table** — a single-row global config (`currency` default `twd`, `currency_minor_units` default `0`, `slot_minutes` default `30`). It replaces the hard-coded "TWD zero-decimal" + "30-min" constants: money columns are integers in `platform_settings.currency`, and a bookable slot is a `slot_minutes`-long window. World-readable (the UI needs it), admin-only write.
+2. A **`platform_settings` table** — a single-row global config (`currency` default `twd`, `currency_minor_units` default `0`, `slot_minutes` default `30`). It replaces the hard-coded "TWD whole-units-display" + "30-min" constants: money columns are integers in `platform_settings.currency`, and a bookable slot is a `slot_minutes`-long window. (`currency_minor_units` = how many decimals to *show*, e.g. `0` for whole TWD — a display concept, **not** Stripe's per-currency exponent; TWD is 2-decimal *in Stripe*.) World-readable (the UI needs it), admin-only write.
 3. A **`barbers` table** (`shop_id → profiles`, **`name`**, intro, address) — **one shop can list MANY barbers** (`shop_id` is **not** unique; there's an index `idx_barbers_shop`). **No bank columns on barbers** — the payout target lives on `profiles` (shop level), since one shop has one bank account.
 4. **Shop-level payout details on `profiles`** — `bank_account_name` / `bank_account_number` (added to `profiles` in M0, filled here). Readable only by the shop + an admin; this is what M2.2 pays out, rolled up per shop.
 5. A **`services` table** (`barber_id`, name, **category** `cut / color / perm / beard`, **price**, **required_slots**) — the menu a customer books from. `price` is an integer in `platform_settings.currency`; `required_slots` is how many consecutive `bookable_slots` the service needs.
@@ -103,12 +103,12 @@ This is the milestone's core. Apply it as **one Supabase migration** via the Sup
 ```sql
 -- ── platform_settings: ONE row of platform-wide config (currency + slot length).
 --    The single_row CHECK + a fixed boolean PK keep it to exactly one row. It replaces
---    the hard-coded "TWD is zero-decimal" + "30-min" constants — money columns are
+--    the hard-coded "TWD whole-units-display" + "30-min" constants — money columns are
 --    integers in platform_settings.currency, and a bookable slot is slot_minutes long. ──
 create table if not exists public.platform_settings (
   id            boolean primary key default true check (id),   -- always true → at most one row
   currency      text not null default 'twd',                   -- ISO-ish currency code; money columns are integers in THIS currency
-  currency_minor_units integer not null default 0,             -- 0 = zero-decimal (TWD/JPY); 2 = cents (USD/EUR). Drives Stripe unit_amount math.
+  currency_minor_units integer not null default 0,             -- DISPLAY decimals only (0 = show whole TWD), NOT Stripe's exponent. Stripe scales off its own per-currency list — TWD is 2-decimal (×100). Do NOT drive the Stripe unit_amount off this.
   slot_minutes  integer not null default 30 check (slot_minutes > 0),  -- the bookable_slots unit length
   updated_at    timestamptz not null default now()
 );
@@ -170,7 +170,7 @@ create index if not exists idx_photos_featured  on public.barber_photos(barber_i
 
 > **Note for Claude Code:** the photo **files** go in a Supabase **Storage** bucket named `barber-photos` (created in Step 3a below, not via this SQL); this `barber_photos` table only stores the **path + metadata**. Keeping the `is_featured` flag here (not in Storage) is deliberate — M4's AI bio-writer reads `where is_featured = true` to pick which work to describe. Don't store image bytes in Postgres.
 
-> **Note for Claude Code:** `price` is a plain **integer in `platform_settings.currency`** — no `_twd` suffix, because the currency is config, not baked into the column name. The default currency is `twd` with `currency_minor_units = 0` (zero-decimal), so when M2.1 builds the Stripe line item, `unit_amount = price * 10^currency_minor_units` (TWD default: ×1; USD would be ×100). The webhook/checkout reads `currency_minor_units` from `platform_settings` instead of assuming TWD ([[supabase-best-practice]], and the Stripe rule in M2.1). Note `bookable_slots` has **no status column** — a slot is just a `slot_minutes`-long time window; whether it's bookable is derived in M1.2 from whether a live booking references it (the `bookings.status` lifecycle, not a slot field).
+> **Note for Claude Code:** `price` is a plain **integer in `platform_settings.currency`** — no `_twd` suffix, because the currency is config, not baked into the column name. **Store whole currency units (e.g. `300` TWD), never a cents value and no ×100 in the DB** — the ×100 happens only at the Stripe boundary in M2.1. Careful: `currency_minor_units` here is a **DISPLAY** concept (`0` = show whole TWD, used by `formatMoney`); it is **not** Stripe's per-currency exponent. When M2.1 builds the Stripe line item it scales `price` into Stripe's smallest unit off Stripe's *own* per-currency list — and **TWD is 2-decimal in Stripe → `unit_amount = price × 100`** (a NT$300 cut → `30000`); only true zero-decimal currencies (JPY, KRW) use ×1. So M2.1 must **not** drive the Stripe amount off `currency_minor_units` ([[supabase-best-practice]], and the Stripe rule in M2.1 / [[stripe-best-practice]] Rule 0). Note `bookable_slots` has **no status column** — a slot is just a `slot_minutes`-long time window; whether it's bookable is derived in M1.2 from whether a live booking references it (the `bookings.status` lifecycle, not a slot field).
 
 ---
 
@@ -372,7 +372,7 @@ The shop's control room. **Implement this in the codebase** (edit the repo direc
 > 建立理髮店後台頁 **`/shop/bookings`**，只有 `profiles.role = 'shop'` 且擁有理髮師的人能進。兩個區塊：
 >
 > **A. 服務與價格編輯 / Services & price editor** — CRUD `services`（屬於我的 `barber_id`）：
-> - 欄位：**名稱 name**、**分類 category**（下拉：`cut` / `color` / `perm` / `beard`）、**價格 price**（整數，金額單位是 `platform_settings.currency`，預設 TWD 是 zero-decimal，**不要乘 100**）、**所需時段數 required_slots**（整數，這個服務需要幾個連續的時段，例如一個時段預設 30 分鐘、要 90 分鐘的服務就填 `3`）。
+> - 欄位：**名稱 name**、**分類 category**（下拉：`cut` / `color` / `perm` / `beard`）、**價格 price**（整數，直接存「整數金額」，金額單位是 `platform_settings.currency`，例如 `300` 就是 NT$300 —— **存的時候不要乘 100**，也不要存分。給 Stripe 用的 ×100 是 M2.1 結帳時才做的，跟資料庫怎麼存無關）、**所需時段數 required_slots**（整數，這個服務需要幾個連續的時段，例如一個時段預設 30 分鐘、要 90 分鐘的服務就填 `3`）。
 > - 可新增 / 編輯 / 刪除我自己的服務。
 >
 > **B. 可預約時段發布 / Publish bookable slots** — CRUD `bookable_slots`（屬於我的 `barber_id`）：
@@ -397,7 +397,7 @@ Then push to GitHub (recall the token from Secrets Manager — don't re-paste) a
 2. **Editing the DB without a migration** — every schema/RLS change goes through `apply_migration`. No ad-hoc SQL-editor `UPDATE`s ([[supabase-best-practice]]).
 3. **Forgetting to enable RLS** — a `create table` without `enable row level security` is world-open. `get_advisors` (Step 4) catches this; don't skip it.
 4. **Bank fields leaking into a public view** — the single most important RLS rule here. The bank fields live on **`profiles`** (shop level) and are gated to shop + admin; `barbers` / `barbers_public` have **no bank columns at all**. Never put `bank_account_number` in a customer-loadable list.
-5. **`price` × 100** — the default currency (`twd`) is **zero-decimal** (`currency_minor_units = 0`). Store the whole-unit `price` in `platform_settings.currency`; M2.1's Stripe `unit_amount = price * 10^currency_minor_units` (TWD default: ×1).
+5. **Storing `price` as cents / pre-multiplying by 100 in the DB** — store the **whole-unit** `price` (e.g. `300` TWD) in `platform_settings.currency`; never a cents value, no ×100 in the DB. The ×100 for Stripe happens only at checkout time in M2.1 — and note **TWD is 2-decimal *in Stripe*** (`unit_amount = price × 100`), which is driven off Stripe's per-currency list, **not** off `currency_minor_units` (a display-only field). Don't try to encode Stripe's scaling into how you store the price. ([[stripe-best-practice]] Rule 0.)
 6. **Re-adding a one-barber-per-shop limit** — the model is now **one shop → MANY barbers**. `barbers.shop_id` is **NOT** unique (there's an index `idx_barbers_shop` instead). The onboarding "My barbers" list must allow "Add another barber"; don't make the form edit-a-single-barber or block a second insert.
 6a. **Photo upload path not matching the Storage policy** — files MUST go under `<barber_id>/...` in the `barber-photos` bucket, or the Step 3a `barber_photos_write_own` policy rejects the upload. Store that same path in `barber_photos.storage_path`. Deleting a photo must delete BOTH the Storage object and the `barber_photos` row.
 7. **Letting `role` flip to `admin`** — the upgrade path writes `shop` only. `admin` is promoted via a one-off migration in the M2.1 prereq, never self-served.

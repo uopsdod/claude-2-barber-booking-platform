@@ -1,6 +1,6 @@
 ---
 name: stripe-best-practice
-description: Hard rules for wiring Stripe Checkout into the 抽成制理髮師預約平台 (commission-based barber booking platform) — dynamic per-booking line items, currency-aware pricing (unit_amount = price × 10^currency_minor_units from platform_settings), a webhook that flips a booking from pending_payment to `paid` (the 20/80 split is computed later at payout-build time, NOT in the webhook), raw-body signature verify, idempotency via a status guard, and the middleware exemption for `/api/stripe/webhook`. Use whenever a student is building M2.1 (`m2.1-buyer-to-admin-payments`), debugging a webhook that "fires but never lands," getting a `400 signature verification failed`, or asking why a NT$500 cut charged NT$50,000. Apply these proactively — stop the student before they break one.
+description: Hard rules for wiring Stripe Checkout into the 抽成制理髮師預約平台 (commission-based barber booking platform) — dynamic per-booking line items, currency-aware pricing (unit_amount = price scaled into Stripe's smallest unit — TWD is 2-decimal, so price × 100, NOT driven off currency_minor_units), a webhook that flips a booking from pending_payment to `paid` (the 20/80 split is computed later at payout-build time, NOT in the webhook), raw-body signature verify, idempotency via a status guard, and the middleware exemption (or the Vite `vercel.json` SPA-rewrite exemption) for `/api/stripe/webhook`. Use whenever a student is building M2.1 (`m2.1-buyer-to-admin-payments`), debugging a webhook that "fires but never lands," getting a `400 signature verification failed`, or asking why a NT$300 cut was rejected at checkout (billed NT$3.00, below Stripe's minimum). Covers both Next.js App Router and Lovable's Vite-SPA-on-Vercel-functions scaffold. Apply these proactively — stop the student before they break one.
 ---
 
 # Stripe Best Practice (Barber Booking — pay-now Checkout, deferred settlement)
@@ -9,7 +9,7 @@ This course's Stripe usage is **pay-now at booking**: a customer confirms a slot
 
 When you (Claude Code) guide a student through M2.1, **apply these rules proactively** — don't wait for them to ask. If you see them about to break one, stop them and explain why.
 
-> **Adapted from a credits/top-up reference Stripe skill.** That product sold **fixed price tiers** and charged the platform's *own* users; ours is a **dynamic per-booking line item**, with the commission split computed later at payout-build time. The transferable rules (webhook-is-truth, raw-body verify, idempotency, middleware exemption, metadata-not-email) carry over verbatim in spirit; the **immutable-Price rule becomes "snapshot the price onto the booking row"** (Rule 8), and there's a **new currency-aware `unit_amount` rule** (Rule 0) that does not exist in the USD reference. Cross-ref [[stripe-mysite]] for an existing TWD + Next.js + Supabase Checkout implementation you can lift the signature/zero-decimal handling from.
+> **Adapted from a credits/top-up reference Stripe skill.** That product sold **fixed price tiers** and charged the platform's *own* users; ours is a **dynamic per-booking line item**, with the commission split computed later at payout-build time. The transferable rules (webhook-is-truth, raw-body verify, idempotency, middleware exemption, metadata-not-email) carry over verbatim in spirit; the **immutable-Price rule becomes "snapshot the price onto the booking row"** (Rule 8), and there's a **new currency-aware `unit_amount` rule** (Rule 0) that does not exist in the USD reference — **TWD is 2-decimal in Stripe (`price × 100`)**, so the scaling is *not* a no-op. Cross-ref [[stripe-mysite]] for an existing Next.js + Supabase Checkout implementation you can lift the **raw-body verify + `stripe listen`** patterns from — but **not** its currency scaling if it treats TWD as zero-decimal (that's the same inverted bug Rule 0 fixes).
 
 ---
 
@@ -30,23 +30,27 @@ The hard rules apply identically in both — only the tooling around them differ
 
 ## Hard rules
 
-### Rule 0 — `unit_amount` = `price × 10^currency_minor_units` — read the exponent from `platform_settings`, never hard-code ×100
+### Rule 0 — `unit_amount` = `price` scaled into Stripe's smallest unit for the currency — TWD is **2-decimal** (`price × 100`), NOT zero-decimal. Do not drive it off `currency_minor_units`.
 
-> **The rule:** `unit_amount` is **`price × 10^currency_minor_units`**, where `currency_minor_units` comes from `platform_settings`. For the default **TWD** config (`currency_minor_units = 0`) that means **×1** — a NT$500 cut is `unit_amount: 500`, **not** `50000`. For a **USD** config (`currency_minor_units = 2`) it would be **×100** ($5.00 → `500`). Do **not** hard-code either factor — read the exponent from config.
+> **The rule:** `unit_amount` is the stored whole-unit `price` scaled into **Stripe's smallest unit for that currency**. **TWD is a 2-decimal currency in Stripe** — it is **NOT** on Stripe's zero-decimal list — so `unit_amount = price × 100`: a NT$300 cut is `unit_amount: 30000` (= NT$300.00), **not** `300`. Only Stripe's *true* zero-decimal currencies (`jpy`, `krw`, …) use `× 1`. **Do NOT scale off `platform_settings.currency_minor_units`** — that column is a *display* concept, a different thing from Stripe's per-currency exponent.
 
-**Why:** Stripe classifies currencies as decimal (USD, EUR — smallest unit is 1/100) or **zero-decimal (TWD, JPY, KRW — smallest unit is 1 dollar/yen/won)**. For a zero-decimal currency Stripe charges `unit_amount` *as-is*; for a 2-decimal one it expects cents. Every tutorial, every Stripe code sample, and every other `price * 100` you've ever written assumes cents — so the reflex is to write `service.price * 100`, which under TWD **charges the customer 100× the real price** (a NT$500 haircut bills **NT$50,000**) and silently corrupts the monthly split downstream. The fix is to drive the factor off `platform_settings.currency_minor_units` (TWD's `0` → ×1) instead of assuming TWD or cents. This is the single most expensive foot-gun in the whole course, and it's invisible in test mode unless you read the amount.
+**Why:** Stripe keys the exponent to a fixed per-currency list. **TWD is 2-decimal** — Stripe stores and charges it in cents (1/100), exactly like USD/EUR — so `unit_amount = price × 100`, and TWD additionally requires the amount be **divisible by 100** (whole-integer prices × 100 always satisfy this). The tempting-but-wrong reflex here is the *reverse* of the usual one: someone "knows TWD looks like whole dollars" and bills `price × 1`, sending `300` = **NT$3.00 ≈ US$0.10** — **below Stripe's ~US$0.50 minimum, so the Checkout Session is rejected and the customer never even reaches the payment page** (an empirically-confirmed failure against a live sandbox: `price 300 → unit_amount 30000 → status succeeded`; `price × 1 → 300 → rejected`). This is invisible until you either read the charged `amount` or watch a real checkout fail, so verify it on the first test payment. Under-charging/rejection — not the mythical "NT$50,000 over-charge" — is the real foot-gun.
 
 **How to apply:**
 ```ts
-// ✅ correct — currency-aware: read the exponent from platform_settings
-const { currency, currency_minor_units } = await getPlatformSettings();
-unit_amount: service.price * 10 ** currency_minor_units,   // TWD (0) → 500 charges NT$500; USD (2) → 50000 charges $500
-// ❌ wrong — the USD/cents reflex; under TWD this charges NT$50,000
-unit_amount: service.price * 100,
+// ✅ correct — scale by Stripe's smallest-unit factor for the currency
+const ZERO_DECIMAL = new Set(['bif','clp','djf','gnf','jpy','kmf','krw','mga','pyg','rwf','vnd','vuv','xaf','xof','xpf']);
+const factor = ZERO_DECIMAL.has(currency.toLowerCase()) ? 1 : 100;
+const unitAmount = booking.price * factor;   // TWD 300 → 30000 (NT$300.00) ; JPY 300 → 300
+// ❌ wrong — bills NT$3.00, below Stripe's ~50¢ minimum → the Session is rejected
+const unitAmount = booking.price * 1;
+// ❌ also wrong — currency_minor_units (0 for TWD) is a DISPLAY concept, not Stripe's exponent
+const unitAmount = booking.price * 10 ** currency_minor_units;
 ```
-- `services.price` is stored as a **whole integer in `platform_settings.currency`** (e.g. `500` TWD) everywhere — the DB column, the `bookings.price` snapshot. The `unit_amount` math then applies the currency exponent. Never a cents value, never a float.
-- After your first test payment, **read the amount in the Stripe dashboard** (or the `payment_intent.amount`) and confirm it matches the currency math (TWD `500`, not `50000`). A wrong magnitude here cascades into a wrong monthly settlement in M2.2.
-- This is a known foot-gun lifted from [[stripe-mysite]] — that skill has the same zero-decimal TWD handling in a sibling Next.js + Supabase project; reuse its pattern (ours just reads the exponent from config instead of hard-coding it).
+- `services.price` is stored as a **whole integer in `platform_settings.currency`** (e.g. `300` TWD) everywhere — the DB column, the `bookings.price` snapshot. The `unit_amount` math then scales it by Stripe's smallest-unit factor. Never a cents value, never a float. (Storing whole units is correct — the ×100 happens only at the Stripe boundary, never in the DB.)
+- **`platform_settings.currency_minor_units` is for DISPLAY only** (`0` = show whole TWD, used by `formatMoney`). It is a *different* thing from Stripe's per-currency exponent — do **not** drive the Stripe `unit_amount` off it. Drive it off the zero-decimal set above.
+- After your first test payment, **read the charged `amount` on the PaymentIntent/Charge** (Stripe dashboard or MCP) and confirm it matches (TWD `300` → `30000`, not `300`). A wrong magnitude here cascades into a wrong monthly settlement in M2.2.
+- **Do not copy [[stripe-mysite]]'s TWD handling if it treats TWD as zero-decimal** — that's the same inverted bug. TWD is 2-decimal (`× 100`); only lift the raw-body verify / `stripe listen` patterns from it, not its currency scaling.
 
 ---
 
@@ -84,6 +88,29 @@ export async function POST(req: Request) {
 }
 ```
 - App Router route handlers do **not** auto-parse the body, so `req.text()` is enough. In the old Pages API you'd also need `export const config = { api: { bodyParser: false } }`. See [[stripe-mysite]] for the exact pattern.
+
+> **Vite-SPA variant (Lovable's default scaffold).** Lovable scaffolds a **client-only Vite + React SPA** — there is **no server runtime, no `app/api/**/route.ts`, no `middleware.ts`**. Your server routes are **Vercel serverless functions** in a top-level `/api` dir (`export default function handler(req: VercelRequest, res: VercelResponse)`; add the `stripe` + `@vercel/node` deps). A Vercel Node function **auto-parses the body**, so you must both **turn the parser off** and **read the raw stream yourself**:
+> ```ts
+> // api/stripe/webhook.ts  (Vercel serverless function — NOT App Router)
+> import type { VercelRequest, VercelResponse } from '@vercel/node'
+> export const config = { api: { bodyParser: false } }   // REQUIRED — else the HMAC breaks
+> async function rawBody(req: VercelRequest): Promise<Buffer> {
+>   const chunks: Buffer[] = []
+>   for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+>   return Buffer.concat(chunks)
+> }
+> export default async function handler(req: VercelRequest, res: VercelResponse) {
+>   const buf = await rawBody(req)                       // RAW bytes — App Router's `await req.text()` does NOT apply here
+>   const sig = req.headers['stripe-signature'] as string
+>   let event
+>   try { event = stripe.webhooks.constructEvent(buf, sig, process.env.STRIPE_WEBHOOK_SECRET!) }
+>   catch { return res.status(400).send('signature verification failed') }
+>   // ...
+> }
+> ```
+> Two more Vite-only gotchas, both **runtime-only** (green `vite build`, then a 500 in prod):
+> - **ESM import needs the `.js` extension.** `package.json` has `"type": "module"` and Vercel transpiles each `/api/*.ts` **separately**, so a relative import must be written `import { x } from '../_supabaseAdmin.js'` (**`.js`, not `.ts` and not extensionless**) or the function 500s with `ERR_MODULE_NOT_FOUND`.
+> - **New-format Supabase keys are opaque, not JWTs.** `sb_publishable_…` / `sb_secret_…` are not JWTs, so the server service-role client needs the **same `apikey`-header fetch shim** the browser client uses, or requests come back unauthorized.
 
 ---
 
@@ -131,6 +158,13 @@ export const config = {
 - Or, if the middleware checks a path allowlist, add `/api/stripe/webhook` to it explicitly.
 - **Symptom → cause:** Stripe says "delivered" but your logs are empty → it's the middleware redirect, not your handler. Check the matcher first.
 
+> **Vite-SPA variant — there is no middleware; the trap is the `vercel.json` SPA rewrite.** A Vite SPA needs a catch-all rewrite so client-side routes serve `index.html`. Written naively that catch-all **swallows `/api/*`** — every webhook POST returns the HTML shell (a 200 with no handler ever running, or a signature 400 that's actually the SPA), and the symptom looks identical to the Next.js middleware redirect. **Exclude `/api/` from the rewrite:**
+> ```json
+> // vercel.json
+> { "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }] }
+> ```
+> This is the Vite equivalent of Rule 5's middleware exemption — same silent failure, different mechanism. Verify the same way: a POST to the webhook path returns 400/200 from your function, not the HTML shell.
+
 ---
 
 ### Rule 6 — Stash the `booking_id` join key in BOTH `metadata` AND `client_reference_id` at session creation.
@@ -163,7 +197,7 @@ client_reference_id: booking_id,
 
 ### Rule 8 — Snapshot the price onto the booking row at creation. The service price can change later.
 
-> **The rule:** When the booking is created (and the Checkout Session built), copy the service's current price into **`bookings.price`**, and charge **that** snapshot. The line item's `unit_amount` is `price × 10^currency_minor_units` (Rule 0) of that same snapshot.
+> **The rule:** When the booking is created (and the Checkout Session built), copy the service's current price into **`bookings.price`**, and charge **that** snapshot. The line item's `unit_amount` is that same snapshot scaled into Stripe's smallest unit (Rule 0 — TWD `× 100`).
 
 **Why:** The reference course used Stripe **Price objects**, which are **immutable** — a captured price can never silently change. We use **dynamic `price_data`** (the service's live price at booking time), which has the *opposite* property: if a barber later edits `services.price`, any code that re-reads the service would retroactively change what a **past** booking appears to have cost — corrupting the monthly settlement M2.2 sums. The fix is to make the booking carry its own immutable price: **snapshot it once, at creation**, and never read back through the service for a historical booking.
 
@@ -173,9 +207,10 @@ client_reference_id: booking_id,
 const price = service.price;                        // read once (integer in platform_settings.currency)
 await db.bookings.insert({ ..., price, status: 'pending_payment' });
 // build the session from the SAME snapshot:
+const factor = ZERO_DECIMAL.has(currency.toLowerCase()) ? 1 : 100;  // Rule 0: TWD is 2-decimal → 100
 line_items: [{ price_data: { currency,              // from platform_settings (e.g. 'twd')
   product_data: { name: `${service.name} @ ${barber.name}` },
-  unit_amount: price * 10 ** currency_minor_units }, quantity: 1 }],   // Rule 0: currency-aware
+  unit_amount: price * factor }, quantity: 1 }],    // Rule 0: TWD 300 → 30000 (NT$300.00)
 ```
 - M2.2's settlement sums **`bookings.price`** for paid bookings — never `services.price`. The service price is "today's price"; the booking row is "what this customer actually paid."
 
@@ -216,14 +251,16 @@ if (event.type === 'checkout.session.completed' && session.payment_status === 'p
 ## Dynamic Checkout Session shape (the M2.1 reference)
 
 ```ts
-const { currency, currency_minor_units } = await getPlatformSettings();   // Rule 0
+const ZERO_DECIMAL = new Set(['bif','clp','djf','gnf','jpy','kmf','krw','mga','pyg','rwf','vnd','vuv','xaf','xof','xpf']);
+const { currency } = await getPlatformSettings();   // Rule 0 (currency_minor_units is DISPLAY-only, not this)
+const factor = ZERO_DECIMAL.has(currency.toLowerCase()) ? 1 : 100;   // TWD → 100 (2-decimal)
 const session = await stripe.checkout.sessions.create({
   mode: 'payment',
   line_items: [{
     price_data: {
       currency,                              // from platform_settings (e.g. 'twd')
       product_data: { name: `${service.name} @ ${barber.name}` },
-      unit_amount: booking.price * 10 ** currency_minor_units,  // Rule 0: currency-aware ; Rule 8: snapshot
+      unit_amount: booking.price * factor,   // Rule 0: TWD 300 → 30000 (NT$300.00) ; Rule 8: snapshot
     },
     quantity: 1,
   }],
@@ -238,7 +275,7 @@ const session = await stripe.checkout.sessions.create({
 
 ## Things to actively watch out for
 
-1. **A NT$500 cut charges NT$50,000** → Rule 0 (under TWD `currency_minor_units = 0`, so `unit_amount = price × 1`; drop the hard-coded `* 100`).
+1. **A NT$300 cut is rejected at checkout** (billed NT$3.00 = `unit_amount 300`, below Stripe's ~US$0.50 minimum, so the customer never reaches the payment page) → Rule 0 (**TWD is 2-decimal → `unit_amount = price × 100`**; you scaled by `× 1`, or drove it off `currency_minor_units`, which is display-only). Fix to `price × 100` via the zero-decimal set.
 2. **`400 No signatures found matching the expected signature`** → Rule 2 (you called `request.json()` before verifying) — *or* Rule 4 (wrong/rotated secret in Vercel env).
 3. **Stripe dashboard says "delivered" but your route logs show zero hits** → Rule 5 (middleware redirected the webhook to `/login`).
 4. **A retried event re-stamps `paid_at`** → Rule 3 (no status guard on the update).
@@ -248,6 +285,9 @@ const session = await stripe.checkout.sessions.create({
 8. **The webhook tries to compute/write a split, a fee/`transactions` row, or a `payout_id`** → Rule 9 (the webhook only records `paid` + `paid_at`; the 20/80 split is computed later at payout-build time from `commission_rates` — there are no `platform_fee`/`barber_amount` columns, no `transactions` table, and the webhook never touches `payout_id`).
 9. **Test card declined in production** → Rule 7 (you're in live mode — use a real card, see [[stripe-go-live]]).
 10. **Stripe MCP charged a real card / created a live object** → the MCP consent page defaulted to **LIVE**; switch it to **sandbox** before M2.1 testing.
+11. **(Vite SPA) The function 500s with `ERR_MODULE_NOT_FOUND` — but `vite build` was green** → Rule 2's Vite variant: a relative import in `/api/*.ts` needs the **`.js` extension** (`"type":"module"` + per-file transpile). Not caught by the build.
+12. **(Vite SPA) The webhook POST returns the HTML shell / never runs** → Rule 5's Vite variant: the `vercel.json` catch-all rewrite swallowed `/api/*`; exclude it with `"/((?!api/).*)"`.
+13. **(Vite SPA) Server Supabase calls are unauthorized with an `sb_secret_…` key** → Rule 2's Vite variant: new-format keys are opaque (not JWTs) — the service-role client needs the `apikey`-header fetch shim.
 
 ---
 
@@ -262,11 +302,17 @@ When a student asks "shouldn't we use Connect / auto-refund the settlement?" →
 
 ---
 
+## Reconciliation is the Stripe MCP's job — no read-proxy Lambda needed
+
+The Stripe MCP covers reconciliation directly: **PaymentIntents / Charges / Refunds reads** plus `fetch_stripe_resources(pi_…)` from the `stripe_payment_intent_id` the webhook stamps (Rule 9's optional column). So there is **no need for a Lambda read-proxy** to check what was charged — key off the stored PaymentIntent id and read it back through the MCP. Note the restricted Cowork key **read-denies the Checkout Sessions resource** but allows PaymentIntents/Charges/Refunds — so **verify a charge via the PaymentIntent/Charge `amount`, not by listing Checkout Sessions** (Checkout Sessions can stay denied). This is why the M2.1 checklist verifies the amount off the PaymentIntent.
+
+---
+
 ## Cross-references
 
 - [[m2.1-buyer-to-admin-payments]] — the build that applies Rules 0–10 (checkout route + webhook + the `commission_rates` table).
 - [[m2.1-buyer-to-admin-payments-prerequisites]] — Stripe sandbox auth (`livemode:false`) + the admin promotion.
 - [[m2.2-admin-to-seller-payment]] — the payout-build flow that computes the 20/80 split from the `paid` bookings this webhook records (Rule 9).
 - [[stripe-go-live]] — sandbox→live keys, the new live webhook endpoint on the custom domain, and the refund-doesn't-reverse-the-settlement flag.
-- [[stripe-mysite]] — an existing **TWD + Next.js + Supabase** Checkout implementation (zero-decimal handling, raw-body signature verify, `stripe listen` local testing) you can lift directly.
+- [[stripe-mysite]] — an existing **TWD + Next.js + Supabase** Checkout implementation you can lift the **raw-body signature verify** and **`stripe listen` local testing** patterns from. **Do NOT copy its currency scaling if it treats TWD as zero-decimal** — TWD is 2-decimal (`price × 100`, Rule 0); that would re-introduce the inverted bug.
 - [[supabase-best-practice]] — why the idempotency constraint (Rule 3) and the `paid` write go through a migration, and where the service-role key the webhook uses lives.
