@@ -26,7 +26,7 @@ Three model facts the checks enforce throughout:
 | D — Build / mark-transferred / cancel state machine | Supabase MCP `execute_sql` + the live pages | same |
 | E — Bank-field RLS + no-transactions / no-fee-columns | Supabase MCP `execute_sql` as different roles | same |
 
-In Cowork mode every Bash/`curl` block below is CLI-only — use the browser/MCP equivalent. Supabase MCP is preferred for the SQL checks in both modes. There is **no Stripe check in this milestone** (M2.2 moves no money).
+In Cowork mode every Bash/`curl` block below is CLI-only — use the browser/MCP equivalent. Supabase MCP is preferred for the SQL checks in both modes. There is **no Stripe check in this milestone** (M2.2 moves no money). **Verifying a live URL in Cowork ([[supabase-best-practice]] Rule 7):** the sandbox `curl` is **proxy-blocked** — a `000/403` is **NOT** proof the site is down. Use the **URL-fetch MCP** (`web_fetch_vercel_url`) or a browser. The `/admin/payouts` gate check (only `role='admin'` reaches it) is a real per-path test — the fetch tool can't shareable-URL a subpath, so confirm the **route guard + RLS** structurally and do the decisive allow/deny test by **navigating in a browser** as admin vs customer.
 
 ## How to run
 
