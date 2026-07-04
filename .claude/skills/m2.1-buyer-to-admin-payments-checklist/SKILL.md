@@ -20,7 +20,7 @@ Verifies the student actually completed M2.1 — not just *thinks* they did. The
 | C — Booking flips to paid + commission_rates seeded | Supabase SQL | Supabase MCP (`execute_sql`) — preferred both modes |
 | D — Admin account | Supabase SQL | Supabase MCP (`execute_sql`) |
 
-In Cowork mode every Bash block is CLI-only — use the equivalent. Don't try to install `curl`/Stripe CLI in Cowork.
+In Cowork mode every Bash block is CLI-only — use the equivalent. Don't try to install `curl`/Stripe CLI in Cowork. **Verifying a live URL in Cowork ([[supabase-best-practice]] Rule 7):** the sandbox `curl` is **proxy-blocked** — a `000/403` is **NOT** evidence the site is down. Use the **URL-fetch MCP** (`web_fetch_vercel_url`) or a browser; treat its `200` as ground truth. (The B1 webhook-path POST is a real per-path check — do it via the URL-fetch MCP / a real request, not the sandbox `curl`, and read the JSON-vs-HTML body, not just the code.)
 
 ## How to run
 

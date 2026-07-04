@@ -97,9 +97,9 @@ aws secretsmanager create-secret --name barber-project/github \
    (Apex: Vercel gives an A record / ALIAS target — use that instead. ALIAS-to-CloudFront-style targets use `AliasTarget`, not `ResourceRecords`.)
 4. **Back in Vercel:** wait for the domain to verify (green ✓) and the HTTPS cert to issue.
 5. **Verify resolution:** `dig +short book.yourdomain.com` (CLI) should return the Vercel target; then load the site over HTTPS and confirm auth + booking still work.
-6. **If Stripe is live**, update the **Stripe webhook endpoint URL to the custom domain** afterward — [[stripe-go-live]], [[m3-custom-domain]].
+6. **If Stripe is live**, update the **Stripe webhook endpoint URL to the custom domain** afterward — [[stripe-go-live]], [[m3-domain]].
 
-> The AWS credentials/MCP are **already connected from M0** — M3 adds **no new AWS setup**, just Route 53 record creation. ([[m3-custom-domain-prerequisites]] is a lightweight carryover check, not a new account.)
+> The AWS credentials/MCP are **already connected from M0** — M3 adds **no new AWS setup**, just Route 53 record creation. ([[m3-domain-prerequisites]] is a lightweight carryover check, not a new account.)
 
 ---
 
@@ -144,7 +144,7 @@ When a student asks "shouldn't we put the Stripe key in Secrets Manager too / sp
 ## Cross-references
 
 - [[m0-landing-page]] — sets up the AWS credentials/MCP and caches the GitHub PAT in `barber-project/github` (Rule 2).
-- [[m3-custom-domain]] — the M3 build that creates the Vercel-provided DNS records in Route 53 (Rule 3).
-- [[m3-custom-domain-prerequisites]] — the lightweight carryover check that AWS/`call_aws` reaches Route 53 (no new setup).
+- [[m3-domain]] — the M3 build that creates the Vercel-provided DNS records in Route 53 (Rule 3).
+- [[m3-domain-prerequisites]] — the lightweight carryover check that AWS/`call_aws` reaches Route 53 (no new setup).
 - [[supabase-best-practice]] — where the app-runtime Supabase keys live (Vercel env), and why Vault isn't used for secrets here.
 - [[stripe-go-live]] — Stripe live keys go in Vercel env; update the webhook URL to the custom domain after M3.

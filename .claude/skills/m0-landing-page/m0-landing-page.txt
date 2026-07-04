@@ -523,8 +523,11 @@ Prompt """
   create table if not exists public.profiles (
     id uuid primary key references auth.users(id) on delete cascade,
     email text,
-    display_name text,           -- the user's personal/business name (set at
-                                 -- sign-up); for a shop this is the payout name
+    display_name text,           -- the account's display name. For a SHOP this is
+                                 -- the SHOP NAME (required in M1.1 onboarding; shown on
+                                 -- the M2.2 payout page as payouts.shop_name). For a
+                                 -- customer, their own name. May be NULL at sign-up;
+                                 -- M1.1 makes it required for shops.
     role text not null default 'customer' check (role in ('customer','shop','admin')),
     bank_account_name   text,
     bank_account_number text,
