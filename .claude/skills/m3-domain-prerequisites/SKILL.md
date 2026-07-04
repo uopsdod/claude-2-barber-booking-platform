@@ -1,6 +1,6 @@
 ---
 name: m3-domain-prerequisites
-description: 抽成制理髮師預約平台 Milestone 3 prerequisites — a LIGHTWEIGHT CARRYOVER CHECK (no new account setup) before binding a custom domain. Confirms the booking app is deployed and green on Vercel, the AWS API MCP / call_aws is connected and can reach Route 53 (same account from M0), and the student HAS a domain in hand and knows subdomain-vs-apex. If Stripe is live, flags that the webhook URL will need updating. Use when the student starts M3, or when m3-domain / -checklist detects a missing carryover piece.
+description: 抽成制理髮師預約平台 Milestone 3 prerequisites — a LIGHTWEIGHT CARRYOVER CHECK (no new account setup) before binding a custom domain. Confirms the booking app is deployed and green on Vercel, the AWS API MCP / call_aws is connected and can reach Route 53 (same account from M0), and the student HAS a domain in hand (confirming WHICH registered domain if the account has several — the host format is fixed policy, `barber.<domain>`, never asked). If Stripe is live, flags that the webhook URL will need updating. Use when the student starts M3, or when m3-domain / -checklist detects a missing carryover piece.
 ---
 
 # M3 Prerequisites — Vercel + Route 53 carryover check
@@ -9,7 +9,7 @@ description: 抽成制理髮師預約平台 Milestone 3 prerequisites — a LIGH
 
 M3 adds **no new account** — it reuses the **Vercel deployment from M0** and the **AWS account from M0** (the one connected for Secrets Manager, which also holds the Route 53 hosted zone). This skill is a **lightweight carryover check**: confirm the pieces M3 depends on are already in place before touching DNS, rather than setting anything up.
 
-It verifies four things: (1) the app is **deployed and green on Vercel**, (2) the **AWS API MCP / `call_aws` is connected and can reach Route 53**, (3) the student **has a domain in hand** and a subdomain-vs-apex choice, and (4) *(if Stripe is live)* a note that the **webhook URL will need updating**.
+It verifies four things: (1) the app is **deployed and green on Vercel**, (2) the **AWS API MCP / `call_aws` is connected and can reach Route 53**, (3) the student **has a domain in hand** (and *which* one, if the account has several — the host format is fixed policy, `barber.<domain>`, never a question), and (4) *(if Stripe is live)* a note that the **webhook URL will need updating**.
 
 ## Architecture
 
@@ -52,12 +52,13 @@ aws route53 list-hosted-zones \
 
 > **Note for Claude Code:** this is the **same AWS account and `[default]` profile** as the M0 Secrets Manager setup — you are NOT setting up new credentials. If `list-hosted-zones` errors on auth, it's the connector, not a permissions gap for a new account. (See [[aws-secrets-best-practice]].)
 
-## Step 3 — The student has a domain in hand + a subdomain-vs-apex choice
+## Step 3 — The student has a domain in hand (confirm WHICH domain — never the format)
 
 This is the **one** genuinely un-discoverable piece — the domain string comes from the student.
 
 - Confirm the student **owns a registered domain** (anywhere — Namecheap / Cloudflare / GoDaddy / Route 53 itself). M3 does **no registration**.
-- Decide the **host to bind**: **default to a subdomain `book.yourdomain.com`** (simplest — one clean `CNAME`, no apex special-casing, no collision with anything else on the domain). Use the bare apex `yourdomain.com` only if the student explicitly asks.
+- **The host format is fixed policy — do NOT ask the student to choose it.** M3 always binds a **semantic subdomain `barber.<domain>`** (e.g. `barber.svuncle.com`): one clean `CNAME`, no apex special-casing, no collision. A **path** (`<domain>/barber`) is not a thing (the app binds to a host, not a path); bare **apex** is only an escape hatch if the student *unprompted* insists. Don't surface a "subdomain vs apex vs path" question.
+- **The one thing you DO confirm: which registered domain**, when the account has several. If `list-hosted-zones` (Step 2) shows more than one zone (e.g. both `svuncle.com` and `learncodebypicture.com`), ask the student which one the booking app should live under — that's the un-discoverable choice, not the format.
 
 ## Step 4 — (If Stripe is live) note the webhook URL will need updating
 
@@ -67,7 +68,7 @@ If the student has already run [[stripe-go-live]] (a real Stripe webhook pointin
 
 - The live `*.vercel.app` URL serves the booking app — `/`, `/login`, `/barbers` all respond (200 or a sign-in redirect) ✅
 - `call_aws` / the AWS API MCP returns `list-hosted-zones` **without an auth error** — same account from M0 — and you've identified the hosted zone for the domain (or noted it doesn't exist yet) ✅
-- The student **owns a domain** and the **host to bind is decided** — a subdomain (`book.yourdomain.com`) by default; bare apex only if explicitly asked ✅
+- The student **owns a domain**, and if the account has several zones you've confirmed **which registered domain** to use — the host is always `barber.<domain>` (fixed policy; you did **not** ask the student to pick a format) ✅
 - *(If Stripe is live)* you've noted the **webhook URL will need updating** after the domain attaches — flag [[stripe-go-live]] ✅
 - **No new account or credential setup is needed** — everything reuses M0's Vercel + AWS connection ✅
 
