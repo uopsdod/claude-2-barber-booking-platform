@@ -1,6 +1,6 @@
 ---
 name: m1.1-seller-setup
-description: 抽成制理髮師預約平台 Milestone 1.1 — let a shop list ONE OR MORE barbers (the `name`/intro/address barber profile), list services, upload sample hairstyle photos, publish bookable schedule slots, and save shop-level payout (bank) details. Adds a "Become a shop" flow + wires the sign-up role tab to `profiles.role = 'shop'`, creates the `platform_settings` (single-row currency + slot-length config) / `barbers` (shop_id NOT unique — many barbers per shop) / `services` / `bookable_slots` / `barber_photos` tables via Supabase `apply_migration` with RLS (a shop may only CRUD their own rows; bank fields live on `profiles` and are readable only by the shop + admin) plus a public `barber-photos` Storage bucket (shop-write, public-read), and builds the shop onboarding (payout settings + create/manage barbers + photo uploader) + the `/shop/bookings` schedule & service editor. Use when the student says "啟動 M1.1", "start M1.1", "讓理髮師上架", "barber profile and schedule", "建立預約排程", "上傳作品照", or any variant of "上架理髮師、發布可預約時段". (對應 course unit 4-7.)
+description: 抽成制理髮師預約平台 Milestone 1.1 — let a shop list ONE OR MORE barbers (the `name`/intro/address barber profile), list services, upload sample hairstyle photos, publish bookable schedule slots, and save shop-level onboarding details on `profiles` — the required **shop name** (`display_name`) + payout (bank) details. Adds a "Become a shop" flow + wires the sign-up role tab to `profiles.role = 'shop'`, creates the `platform_settings` (single-row currency + slot-length config) / `barbers` (shop_id NOT unique — many barbers per shop) / `services` / `bookable_slots` / `barber_photos` tables via Supabase `apply_migration` with RLS (a shop may only CRUD their own rows; bank fields live on `profiles` and are readable only by the shop + admin) plus a public `barber-photos` Storage bucket (shop-write, public-read), and builds the shop onboarding (payout settings + create/manage barbers + photo uploader) + the `/shop/bookings` schedule & service editor. Use when the student says "啟動 M1.1", "start M1.1", "讓理髮師上架", "barber profile and schedule", "建立預約排程", "上傳作品照", or any variant of "上架理髮師、發布可預約時段". (對應 course unit 4-7.)
 ---
 
 # M1.1 — 理髮店上架與預約排程（上架理髮師、建立預約排程）
@@ -9,14 +9,14 @@ description: 抽成制理髮師預約平台 Milestone 1.1 — let a shop list ON
 
 ## What this skill does
 
-Walks the student through Milestone 1.1 — the **shop side**: a customer becomes a shop, lists **one or more barbers**, lists services with prices, uploads **sample hairstyle photos** (the barber's portfolio of past work), publishes bookable time slots, and saves their **shop-level payout (bank) details**. (A shop is the aggregator account that runs one-or-more barbers — a one-man shop works too.) This is the **first milestone where Supabase holds real application data** (M0 was auth-only): you create the single-row `platform_settings` config plus four tenant tables + a Storage bucket with RLS via `apply_migration`, then build two shop surfaces on top of them.
+Walks the student through Milestone 1.1 — the **shop side**: a customer becomes a shop, lists **one or more barbers**, lists services with prices, uploads **sample hairstyle photos** (the barber's portfolio of past work), publishes bookable time slots, and saves their **shop-level onboarding details** on `profiles` — the required **shop name** (`display_name`, shown on the M2.2 payout page) plus payout (bank) details. (A shop is the aggregator account that runs one-or-more barbers — a one-man shop works too.) This is the **first milestone where Supabase holds real application data** (M0 was auth-only): you create the single-row `platform_settings` config plus four tenant tables + a Storage bucket with RLS via `apply_migration`, then build two shop surfaces on top of them.
 
 By the end the student has:
 
 1. A **"Become a shop" path** — an existing customer can upgrade to a shop, and the M0 sign-up role tab now persists `profiles.role = 'shop'` so the shop surfaces unlock.
-2. A **`platform_settings` table** — a single-row global config (`currency` default `twd`, `currency_minor_units` default `0`, `slot_minutes` default `30`). It replaces the hard-coded "TWD zero-decimal" + "30-min" constants: money columns are integers in `platform_settings.currency`, and a bookable slot is a `slot_minutes`-long window. World-readable (the UI needs it), admin-only write.
+2. A **`platform_settings` table** — a single-row global config (`currency` default `twd`, `currency_minor_units` default `0`, `slot_minutes` default `30`). It replaces the hard-coded "TWD whole-units-display" + "30-min" constants: money columns are integers in `platform_settings.currency`, and a bookable slot is a `slot_minutes`-long window. (`currency_minor_units` = how many decimals to *show*, e.g. `0` for whole TWD — a display concept, **not** Stripe's per-currency exponent; TWD is 2-decimal *in Stripe*.) World-readable (the UI needs it), admin-only write.
 3. A **`barbers` table** (`shop_id → profiles`, **`name`**, intro, address) — **one shop can list MANY barbers** (`shop_id` is **not** unique; there's an index `idx_barbers_shop`). **No bank columns on barbers** — the payout target lives on `profiles` (shop level), since one shop has one bank account.
-4. **Shop-level payout details on `profiles`** — `bank_account_name` / `bank_account_number` (added to `profiles` in M0, filled here). Readable only by the shop + an admin; this is what M2.2 pays out, rolled up per shop.
+4. **Shop-level payout details on `profiles`** — the **shop name** `display_name` (the shop's display name, e.g. "Downtown Cuts") + `bank_account_name` / `bank_account_number` (all added to `profiles` in M0, **filled here — all three required to finish shop onboarding**). `display_name` is public-safe and identifies the shop on the admin payout page (M2.2 snapshots it as `payouts.shop_name`); the bank fields are readable only by the shop + an admin. This is what M2.2 pays out, rolled up per shop.
 5. A **`services` table** (`barber_id`, name, **category** `cut / color / perm / beard`, **price**, **required_slots**) — the menu a customer books from. `price` is an integer in `platform_settings.currency`; `required_slots` is how many consecutive `bookable_slots` the service needs.
 6. A **`bookable_slots` table** (`barber_id`, `starts_at`, `ends_at`) — published time windows, **with no status column**. Each slot is a **`platform_settings.slot_minutes`-long unit** (configurable, default 30 min): the barber publishes those windows, and in M1.2 a booking spans **N = service.required_slots** consecutive slots. A slot is bookable until a booking references it (the booking lifecycle lives on `bookings` + the `booking_slots` join table, M1.2). 
 
@@ -89,10 +89,11 @@ M0 already captures `customer` / `shop` from the sign-up role tab into `profiles
 > 1. 登入後的導覽列／個人選單裡，若使用者目前是 **customer**，顯示一個 **「開店 / Become a shop」** 按鈕；點下去帶他到理髮店上架表單（Step 5 會建）。
 > 2. 註冊頁那個 **Customer ↔ Shop 分頁**：選 Shop 註冊的人（`role = 'shop'`），登入後應該直接看到理髮店後台入口（而不是顧客的瀏覽頁）。
 > 3. 角色判斷一律讀 **Supabase `profiles.role`**（M0 已建好的欄位），不要在前端自己存一份角色狀態。`shop` 才能看到 `/shop/bookings`；`customer` 看到的是「開店」入口。
+> 4. **登入後要「依角色導向」，不要一律丟到 `/barbers`。** 登入成功後讀 `profiles.role`，再導向：`shop` → `/shop`（他的後台），`admin` → `/admin/payouts`（撥款頁，M2.2 才建；在那之前導 `/shop` 或 `/barbers` 都行），其他（`customer`）→ `/barbers`。註冊信的 `emailRedirectTo` 也用同一套邏輯（或先導到一個會依角色再分流的落地頁）。**一律丟 `/barbers` 會讓 shop 一登入就掉進顧客瀏覽頁、admin 也看不到自己的撥款頁**——這是 M2.2 才踩到的坑，在這裡就修好。
 >
 > 注意：這一步**先不要**動任何資料表 schema（barbers/services 等我會用 migration 建）；你只要接 UI 與 `profiles.role` 的判斷。
 
-**Note for Claude Code:** the actual flip of `customer → shop` for an upgrading user should happen through Supabase, **gated by RLS** (a user updating their **own** `profiles.role` to `shop`). It must **never** allow `admin` — that allowlist stays `customer | shop | admin` and the sign-up/upgrade path only ever writes `customer | shop`; `admin` is promoted only by a one-off migration in the M2.1 prereq ([[supabase-best-practice]]). The "Become a shop" button is just the UI seam; the table that makes it real is `barbers`, built next.
+**Note for Claude Code:** the actual flip of `customer → shop` for an upgrading user should happen through Supabase, **gated by RLS** (a user updating their **own** `profiles.role` to `shop`). It must **never** allow `admin` — that allowlist stays `customer | shop | admin` and the sign-up/upgrade path only ever writes `customer | shop`; `admin` is promoted only by a one-off migration in the M2.1 prereq ([[supabase-best-practice]]). The "Become a shop" button is just the UI seam; the table that makes it real is `barbers`, built next. **Make the post-login redirect role-aware here (item 4).** A blanket redirect to `/barbers` looks fine in M1.1 (there's only the shop + customer split), but it silently strands the wrong roles later: a shop lands on the customer browse page instead of `/shop`, and in M2.2 the `admin` lands on `/barbers` with no way to reach `/admin/payouts`. Reading `profiles.role` once after auth and branching (`shop`→`/shop`, `admin`→`/admin/payouts`, else `/barbers`) fixes both at the source — cheaper than retrofitting it in M2.2.
 
 ---
 
@@ -103,12 +104,12 @@ This is the milestone's core. Apply it as **one Supabase migration** via the Sup
 ```sql
 -- ── platform_settings: ONE row of platform-wide config (currency + slot length).
 --    The single_row CHECK + a fixed boolean PK keep it to exactly one row. It replaces
---    the hard-coded "TWD is zero-decimal" + "30-min" constants — money columns are
+--    the hard-coded "TWD whole-units-display" + "30-min" constants — money columns are
 --    integers in platform_settings.currency, and a bookable slot is slot_minutes long. ──
 create table if not exists public.platform_settings (
   id            boolean primary key default true check (id),   -- always true → at most one row
   currency      text not null default 'twd',                   -- ISO-ish currency code; money columns are integers in THIS currency
-  currency_minor_units integer not null default 0,             -- 0 = zero-decimal (TWD/JPY); 2 = cents (USD/EUR). Drives Stripe unit_amount math.
+  currency_minor_units integer not null default 0,             -- DISPLAY decimals only (0 = show whole TWD), NOT Stripe's exponent. Stripe scales off its own per-currency list — TWD is 2-decimal (×100). Do NOT drive the Stripe unit_amount off this.
   slot_minutes  integer not null default 30 check (slot_minutes > 0),  -- the bookable_slots unit length
   updated_at    timestamptz not null default now()
 );
@@ -170,7 +171,7 @@ create index if not exists idx_photos_featured  on public.barber_photos(barber_i
 
 > **Note for Claude Code:** the photo **files** go in a Supabase **Storage** bucket named `barber-photos` (created in Step 3a below, not via this SQL); this `barber_photos` table only stores the **path + metadata**. Keeping the `is_featured` flag here (not in Storage) is deliberate — M4's AI bio-writer reads `where is_featured = true` to pick which work to describe. Don't store image bytes in Postgres.
 
-> **Note for Claude Code:** `price` is a plain **integer in `platform_settings.currency`** — no `_twd` suffix, because the currency is config, not baked into the column name. The default currency is `twd` with `currency_minor_units = 0` (zero-decimal), so when M2.1 builds the Stripe line item, `unit_amount = price * 10^currency_minor_units` (TWD default: ×1; USD would be ×100). The webhook/checkout reads `currency_minor_units` from `platform_settings` instead of assuming TWD ([[supabase-best-practice]], and the Stripe rule in M2.1). Note `bookable_slots` has **no status column** — a slot is just a `slot_minutes`-long time window; whether it's bookable is derived in M1.2 from whether a live booking references it (the `bookings.status` lifecycle, not a slot field).
+> **Note for Claude Code:** `price` is a plain **integer in `platform_settings.currency`** — no `_twd` suffix, because the currency is config, not baked into the column name. **Store whole currency units (e.g. `300` TWD), never a cents value and no ×100 in the DB** — the ×100 happens only at the Stripe boundary in M2.1. Careful: `currency_minor_units` here is a **DISPLAY** concept (`0` = show whole TWD, used by `formatMoney`); it is **not** Stripe's per-currency exponent. When M2.1 builds the Stripe line item it scales `price` into Stripe's smallest unit off Stripe's *own* per-currency list — and **TWD is 2-decimal in Stripe → `unit_amount = price × 100`** (a NT$300 cut → `30000`); only true zero-decimal currencies (JPY, KRW) use ×1. So M2.1 must **not** drive the Stripe amount off `currency_minor_units` ([[supabase-best-practice]], and the Stripe rule in M2.1 / [[stripe-best-practice]] Rule 0). Note `bookable_slots` has **no status column** — a slot is just a `slot_minutes`-long time window; whether it's bookable is derived in M1.2 from whether a live booking references it (the `bookings.status` lifecycle, not a slot field).
 
 ---
 
@@ -341,6 +342,7 @@ Now the UI. A shop can run **many barbers**, so this is two pieces: a **shop-lev
 > 建立「理髮店上架 / Shop onboarding」區，只有登入且 `profiles.role = 'shop'`（或剛從「開店」進來的人）能看到。**一個 shop 可以開很多位理髮師。**
 >
 > **A. 撥款設定 / Payout settings（shop 層級，全部理髮師共用）** — 寫到 **`profiles`**（目前登入者那一筆）：
+> - **店名 shop name → `display_name`**（**必填**）— 這就是這間理髮店的顯示名稱（例如「Downtown Cuts」）。說明文字寫 **「你的理髮店名稱，會顯示在撥款紀錄上 / your shop's name, shown on payout records」**。**注意：這是店名，不是理髮師的名字**（理髮師的名字是 B 區每一位 `barbers.name`）；一間店可以有很多位理髮師，但只有一個店名。
 > - **匯款戶名 bank_account_name**（**必填**）
 > - **匯款帳號 bank_account_number**（**必填**）
 > - 標註 **「先用測試資料即可 / use test data first」**。說明文字寫 **「你的理髮店收款的銀行帳戶 / the bank account where your shop gets paid」**。
@@ -357,11 +359,12 @@ Now the UI. A shop can run **many barbers**, so this is two pieces: a **shop-lev
 > - 可刪除自己的作品照（同時刪 Storage 檔案與 `barber_photos` 那一筆）。顯示縮圖牆管理排序與精選。
 >
 > **規則：**
-> - **撥款銀行資訊為必填** — shop 沒填就不能收款。
-> - **銀行欄位在 `profiles`，絕對不要**出現在任何公開頁面或清單；只有本人和 admin 能讀。作品照則相反——是公開的，任何人都看得到。
+> - **店名（`display_name`）與撥款銀行資訊（`bank_account_name` / `bank_account_number`）都是必填** — 這三個是「完成開店 / finish shop signup」的**門檻**：三個都填好、成功寫進 `profiles` 之前，onboarding 不算完成（送出按鈕 disabled 或擋下並提示，且用 `not null` / 表單驗證擋空值）。店名沒填就不能收款，因為它會顯示在撥款紀錄上（M2.2 的 `payouts.shop_name` 就是這一格的快照）。
+> - **`display_name` 是店名，供 admin 撥款頁與 `/shop/earnings` 辨識這間店**；不要拿理髮師的 `barbers.name` 來當店名（一間店有很多位理髮師）。
+> - **銀行欄位在 `profiles`，絕對不要**出現在任何公開頁面或清單；只有本人和 admin 能讀。作品照則相反——是公開的，任何人都看得到。（店名 `display_name` 不是敏感資料，可以顯示。）
 > - 所有讀寫都走 Supabase client + Storage + RLS；不要用 service-role key 在前端。
 
-**Note for Claude Code:** the model is **one shop → many barbers**, so do NOT add a "one barber only" guard (the old `shop_id UNIQUE` is gone). Two opposite visibility rules: **bank fields are on `profiles`, shop+admin-only** (the shop's single payout account, never public), while **`barber_photos` are public-read** (the portfolio is meant to be seen). Upload to the `barber-photos` bucket under the `<barber_id>/...` prefix so the Step 3a Storage policy authorizes the write. Don't wire any real payout integration here. *(Author-only — keep OUT of student-facing copy: the `is_featured` flag is what the M4 egg unit `m4-ai-autofill-barber` feeds to a vision model to draft the bio; payouts are a manual admin bank transfer rolled up per shop, recorded in M2.2.)*
+**Note for Claude Code:** the model is **one shop → many barbers**, so do NOT add a "one barber only" guard (the old `shop_id UNIQUE` is gone). **Shop name vs barber name:** the shop's own name is **`profiles.display_name`** (required in the Payout settings form — the gate to finish onboarding, and what M2.2 shows on the payout page as `payouts.shop_name`); an individual barber's name is `barbers.name`. Don't conflate them or use a barber's name as the shop name. Three opposite visibility rules: **`display_name` is public-safe** (a storefront name, shown to the admin and fine to display), **bank fields are on `profiles`, shop+admin-only** (the shop's single payout account, never public), while **`barber_photos` are public-read** (the portfolio is meant to be seen). Upload to the `barber-photos` bucket under the `<barber_id>/...` prefix so the Step 3a Storage policy authorizes the write. Don't wire any real payout integration here. *(Author-only — keep OUT of student-facing copy: the `is_featured` flag is what the M4 egg unit `m4-ai-autofill-barber` feeds to a vision model to draft the bio; payouts are a manual admin bank transfer rolled up per shop, recorded in M2.2.)*
 
 ---
 
@@ -372,7 +375,7 @@ The shop's control room. **Implement this in the codebase** (edit the repo direc
 > 建立理髮店後台頁 **`/shop/bookings`**，只有 `profiles.role = 'shop'` 且擁有理髮師的人能進。兩個區塊：
 >
 > **A. 服務與價格編輯 / Services & price editor** — CRUD `services`（屬於我的 `barber_id`）：
-> - 欄位：**名稱 name**、**分類 category**（下拉：`cut` / `color` / `perm` / `beard`）、**價格 price**（整數，金額單位是 `platform_settings.currency`，預設 TWD 是 zero-decimal，**不要乘 100**）、**所需時段數 required_slots**（整數，這個服務需要幾個連續的時段，例如一個時段預設 30 分鐘、要 90 分鐘的服務就填 `3`）。
+> - 欄位：**名稱 name**、**分類 category**（下拉：`cut` / `color` / `perm` / `beard`）、**價格 price**（整數，直接存「整數金額」，金額單位是 `platform_settings.currency`，例如 `300` 就是 NT$300 —— **存的時候不要乘 100**，也不要存分。給 Stripe 用的 ×100 是 M2.1 結帳時才做的，跟資料庫怎麼存無關）、**所需時段數 required_slots**（整數，這個服務需要幾個連續的時段，例如一個時段預設 30 分鐘、要 90 分鐘的服務就填 `3`）。
 > - 可新增 / 編輯 / 刪除我自己的服務。
 >
 > **B. 可預約時段發布 / Publish bookable slots** — CRUD `bookable_slots`（屬於我的 `barber_id`）：
@@ -397,7 +400,7 @@ Then push to GitHub (recall the token from Secrets Manager — don't re-paste) a
 2. **Editing the DB without a migration** — every schema/RLS change goes through `apply_migration`. No ad-hoc SQL-editor `UPDATE`s ([[supabase-best-practice]]).
 3. **Forgetting to enable RLS** — a `create table` without `enable row level security` is world-open. `get_advisors` (Step 4) catches this; don't skip it.
 4. **Bank fields leaking into a public view** — the single most important RLS rule here. The bank fields live on **`profiles`** (shop level) and are gated to shop + admin; `barbers` / `barbers_public` have **no bank columns at all**. Never put `bank_account_number` in a customer-loadable list.
-5. **`price` × 100** — the default currency (`twd`) is **zero-decimal** (`currency_minor_units = 0`). Store the whole-unit `price` in `platform_settings.currency`; M2.1's Stripe `unit_amount = price * 10^currency_minor_units` (TWD default: ×1).
+5. **Storing `price` as cents / pre-multiplying by 100 in the DB** — store the **whole-unit** `price` (e.g. `300` TWD) in `platform_settings.currency`; never a cents value, no ×100 in the DB. The ×100 for Stripe happens only at checkout time in M2.1 — and note **TWD is 2-decimal *in Stripe*** (`unit_amount = price × 100`), which is driven off Stripe's per-currency list, **not** off `currency_minor_units` (a display-only field). Don't try to encode Stripe's scaling into how you store the price. ([[stripe-best-practice]] Rule 0.)
 6. **Re-adding a one-barber-per-shop limit** — the model is now **one shop → MANY barbers**. `barbers.shop_id` is **NOT** unique (there's an index `idx_barbers_shop` instead). The onboarding "My barbers" list must allow "Add another barber"; don't make the form edit-a-single-barber or block a second insert.
 6a. **Photo upload path not matching the Storage policy** — files MUST go under `<barber_id>/...` in the `barber-photos` bucket, or the Step 3a `barber_photos_write_own` policy rejects the upload. Store that same path in `barber_photos.storage_path`. Deleting a photo must delete BOTH the Storage object and the `barber_photos` row.
 7. **Letting `role` flip to `admin`** — the upgrade path writes `shop` only. `admin` is promoted via a one-off migration in the M2.1 prereq, never self-served.

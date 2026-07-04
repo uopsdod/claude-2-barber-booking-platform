@@ -22,7 +22,7 @@ Remember the M1.2 model: **no payment yet, and slots have NO status column.** A 
 | C — Book dialog + booking write | browser (click Book) + Supabase MCP | browser/Playwright MCP + Supabase MCP |
 | D — My-bookings + RLS isolation | browser + Supabase MCP | Supabase MCP (preferred both modes) |
 
-In Cowork mode every Bash block below is CLI-only — use the equivalent. Don't try to install `curl` in Cowork.
+In Cowork mode every Bash block below is CLI-only — use the equivalent. Don't try to install `curl` in Cowork. **Verifying a live URL in Cowork ([[supabase-best-practice]] Rule 7):** the sandbox `curl` is **proxy-blocked** — a `000/403` is **NOT** evidence the site is down. Verify a live host with the **URL-fetch MCP** (`web_fetch_vercel_url`) or a browser, treating its `200` as ground truth. For **SPA deep links** (`/barbers`, `/barbers/[id]`), the fetch tool can't produce a shareable URL for subpaths — confirm resolution via **root-200 + the `vercel.json` catch-all rewrite**, and do the real per-path check by **navigating in a browser**.
 
 ## How to run
 
