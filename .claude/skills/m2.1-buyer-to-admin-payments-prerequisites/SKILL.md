@@ -25,6 +25,26 @@ This prereq does **two** things, and only two:
 
 ---
 
+## Part 0 — Carryover check (source of truth + the objects M2.1 consumes)
+
+Before any setup, confirm you're building on the real, current state — **the source of truth is GitHub `main` + the Supabase project, NOT a local checkout** (a local `src/` can be commits behind while the DB/deploy are ahead; [[supabase-best-practice]] watch-out #11):
+
+> Have the student **`git pull` on `main`** and confirm the repo is current before you touch anything.
+
+Then verify the **specific carryover objects M2.1's checkout route + dialog rewire depend on** actually exist (a failing read here tells the student exactly what to backfill, instead of a silent mid-build failure). Via the Supabase MCP **`execute_sql`**:
+
+```sql
+select to_regclass('public.bookings')      as bookings,        -- M1.2 booking table (checkout reads its price snapshot)
+       to_regclass('public.booking_slots')  as booking_slots,   -- M1.2 join table
+       to_regproc('public.create_booking')  as create_booking;  -- M1.2 RPC the dialog calls before Checkout
+```
+- All three **non-NULL** → ✅ M1.2's buyer flow is in place; M2.1 rewires its dialog `confirm` onto Stripe.
+- Any **NULL** → M1.2 isn't done (or a partial run). Stop and finish `[[m1.2-buyer-setup]]` first — M2.1 has nothing to charge without a `pending_payment` booking to pay for.
+
+*(Env-var carryovers — `SUPABASE_SECRET_KEY` etc. — are dashboard-only and can't be MCP-read; they're confirmed by the student in A4/A6.)*
+
+---
+
 ## Part A — Stripe sandbox account + MCP/CLI auth
 
 ### A1 — Make sure the student has a Stripe account

@@ -376,6 +376,8 @@ You should see one row per **owed** `paid` booking (those with `payout_id IS NUL
 
 **Then run `get_advisors` (security)** and read it correctly: there should be **NO `security_definer_view` ERROR** on `owed_bookings` (the `security_invoker = true` clears it). You **will** see WARNING-level findings that `anon`/`authenticated` can execute `build_payout` / `mark_payout_transferred` / `cancel_payout` / `is_admin` — those are **expected and safe** (the in-function `is_admin()` guard is the real control; the `revoke ... from anon` handles the write RPCs). Don't let the student mistake those WARNINGs for a break.
 
+**Then regenerate `src/integrations/supabase/types.ts`** (`generate_typescript_types`) so the new `payouts` row type, the `owed_bookings` view row, and the `build_payout` / `mark_payout_transferred` / `cancel_payout` RPC signatures exist **before** you write the `/admin/payouts` + `/shop/earnings` pages (Steps 2–4). Without this, every query/RPC call against the new objects is `never`-typed. ([[supabase-best-practice]] Rule 6 — the standard `apply_migration → get_advisors → generate_typescript_types → write UI` sequence.)
+
 ---
 
 ### Step 2 — Build the `/admin/payouts` builder (live owed list + filters + multi-select → build payout)
@@ -524,7 +526,7 @@ It verifies the owed-pool math (`price × rate = platform_cut + shop_cut`, sums 
 When `m2.2-admin-to-seller-payment-checklist` is green, tell the student (milestone-scoped — celebrate M2.2, don't surface the next milestone):
 「M2.2 完成了！抽成撥款制度上線了 — admin 在 `/admin/payouts` 從『欠款池』（還沒撥款的 paid bookings）勾選某一間店家的預約，按『建立撥款』就會產生一筆待轉帳（pending_transfer）的 payout，並把這些 booking 的 `payout_id` 蓋上（離開欠款池）；轉帳後按『標記為已轉帳』，payout 變 `transferred`（booking 不用改狀態，撥款與否是看 `payout_id` 推導的）；建錯了還能在轉帳前『取消』，booking 的 `payout_id` 被清空、退回欠款池。店家在 `/shop/earnings` 立刻看到自己哪些還沒撥、哪些已納入撥款及其狀態。整個預約 → 付款 → 撥款的閉環都通了 ✅」
 
-> **Note for Claude Code (author-only — do NOT volunteer to the student):** the next milestone attaches the student's own custom domain to the Vercel deploy, with DNS records created in AWS Route 53 (the AWS access is already connected — no new setup). When the instructor advances the student (or the student asks "what's next"), run `m3-custom-domain-prerequisites` first (a lightweight carryover check that the Vercel deploy is green and `call_aws` can reach Route 53), then load `[[m3-custom-domain]]`. Don't seed the domain/go-live steps into the student's mental model at the end of M2.2.
+> **Note for Claude Code (author-only — do NOT volunteer to the student):** the next milestone attaches the student's own custom domain to the Vercel deploy, with DNS records created in AWS Route 53 (the AWS access is already connected — no new setup). When the instructor advances the student (or the student asks "what's next"), run `m3-domain-prerequisites` first (a lightweight carryover check that the Vercel deploy is green and `call_aws` can reach Route 53), then load `[[m3-domain]]`. Don't seed the domain/go-live steps into the student's mental model at the end of M2.2.
 
 ## Reference
 
@@ -532,4 +534,4 @@ When `m2.2-admin-to-seller-payment-checklist` is green, tell the student (milest
 - Supabase RLS: https://supabase.com/docs/guides/auth/row-level-security
 - Supabase migrations (`apply_migration`): https://supabase.com/docs/guides/deployment/database-migrations
 - Postgres arrays / `any()`: https://www.postgresql.org/docs/current/functions-array.html
-- Cross-refs: [[m2.1-buyer-to-admin-payments]] · [[supabase-best-practice]] · [[m3-custom-domain]]
+- Cross-refs: [[m2.1-buyer-to-admin-payments]] · [[supabase-best-practice]] · [[m3-domain]]

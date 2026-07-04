@@ -66,12 +66,14 @@ You (Claude Code) **implement every step you can yourself, in order — do NOT w
 
 Everything else — the `commission_rates` migration, both API routes, the dialog rewire, the middleware exemption, the success page, and all verification — you do and check yourself. Report what you did and what you verified as you go.
 
-> **FIRST: detect the scaffold — Next.js App Router vs Lovable's Vite-SPA.** The code blocks below are written for **Next.js App Router** (`app/api/**/route.ts`, `middleware.ts`, `await req.text()`). But **Lovable scaffolds a client-only Vite + React SPA** — no server runtime, no `app/`, no `middleware.ts`. Check for `vite.config.*` / an `index.html` entry / `"type": "module"` in `package.json` before writing any route. If it's Vite, translate every route to the **Vite-SPA track** ([[stripe-best-practice]] Rule 2's Vite variant has the full pattern):
-> - **Server routes = Vercel serverless functions** in a top-level `/api` dir: `export default function handler(req: VercelRequest, res: VercelResponse)`. Add the `stripe` + `@vercel/node` deps. (So `app/api/bookings/checkout/route.ts` → `api/bookings/checkout.ts`, `app/api/stripe/webhook/route.ts` → `api/stripe/webhook.ts`.)
-> - **Webhook raw body:** a Vercel Node function auto-parses the body, so set `export const config = { api: { bodyParser: false } }` **and** buffer the raw stream yourself (helper in Rule 2) — App Router's `await req.text()` does **not** apply.
-> - **Step 7's "middleware exemption" becomes the `vercel.json` SPA rewrite.** There's no middleware; the catch-all rewrite that serves `index.html` will otherwise swallow `/api/*`. Exclude it: `"rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }]`.
+> **THIS COURSE IS A VITE + REACT SPA — that is the default track. Build the routes as Vercel serverless functions.** Lovable scaffolds a **client-only Vite SPA** on Vercel (no Next.js runtime, no `app/` router, no `middleware.ts`) — confirm with `vite.config.*` / an `index.html` entry / `"type": "module"` in `package.json`. The primary copy-paste code in Steps 4/6/7 is written for this. The Vite-SPA rules ([[stripe-best-practice]] Rule 2's Vite variant is canonical):
+> - **Server routes = Vercel serverless functions** in a top-level `/api` dir: `export default function handler(req: VercelRequest, res: VercelResponse)` (files `api/bookings/checkout.ts`, `api/stripe/webhook.ts`). Add the `stripe` + `@vercel/node` deps.
+> - **Webhook raw body:** a Vercel Node function auto-parses the body, so set `export const config = { api: { bodyParser: false } }` **and** buffer the raw stream yourself (`for await (const chunk of req) …`). There is no App Router `await req.text()` here.
+> - **Step 7's webhook exemption is the `vercel.json` SPA rewrite** (there's no middleware): the catch-all that serves `index.html` will otherwise swallow `/api/*`. Exclude it: `"rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }]`.
 > - **ESM import gotcha (runtime-only — green `vite build`, 500 in prod):** `"type": "module"` + Vercel transpiling each `/api/*.ts` separately means a relative import needs the **`.js` extension** — `import { x } from '../_supabaseAdmin.js'` — or the function 500s with `ERR_MODULE_NOT_FOUND`.
 > - **Opaque Supabase keys:** new-format `sb_secret_…` keys are not JWTs — the server service-role client needs the same `apikey`-header fetch shim the browser client uses, or requests are unauthorized.
+>
+> **If (and only if) you actually scaffolded Next.js App Router instead** (`app/api/**/route.ts`, `middleware.ts`), each code block below has a short *"Next.js variant"* note — `await req.text()` reads the raw body directly (no `bodyParser` config) and the Step 7 exemption is a `middleware.ts` matcher instead of the `vercel.json` rewrite. Don't build both; pick the one matching your repo (Vite for this course's path).
 
 1. Confirm the prereq is green (Stripe sandbox auth + `SUPABASE_SECRET_KEY` + admin promoted)
 2. Create the `commission_rates` table (migration)
@@ -79,7 +81,7 @@ Everything else — the `commission_rates` migration, both API routes, the dialo
 4. Build `POST /api/bookings/checkout` (dynamic, `unit_amount` scaled into Stripe's smallest unit — TWD ×100)
 5. Rewire the M1.2 dialog confirm → launch Checkout
 6. Build `POST /api/stripe/webhook` (raw-body verify, idempotent, flip pending_payment → paid + stamp paid_at)
-7. Exempt `/api/stripe/webhook` in middleware
+7. Keep the `vercel.json` SPA rewrite from swallowing `/api/*` (Next.js: middleware exemption)
 8. Add the `/bookings/success` poll page + confirm the webhook endpoint & `STRIPE_WEBHOOK_SECRET` (created in the prereq) + redeploy
 9. End-to-end test with `4242 4242 4242 4242` → run the checklist
 
@@ -127,7 +129,7 @@ alter table public.bookings add column if not exists stripe_payment_intent_id te
 create unique index if not exists uniq_bookings_pi on public.bookings(stripe_payment_intent_id);
 ```
 
-> **Note for Claude Code:** there is **deliberately no per-booking ledger** — `bookings` carries no `platform_fee`/`barber_amount`, and there is **no `transactions` table** to insert into. The webhook (Step 6) only flips `bookings.status` to `paid`, stamps `paid_at`, and records `stripe_payment_intent_id`; "money in" = the `paid` booking's `price` snapshot (M1.2). The `stripe_payment_intent_id` is not money data — it's a pointer to the Stripe payment for **reconciliation** (verify the charged amount via the Stripe MCP's PaymentIntent/Charge reads keyed off it) and a **hard idempotency backstop** (the UNIQUE index). M2.2 computes `platform_cut` / `shop_cut` at payout-build time by summing the admin's picked `paid` bookings × `commission_rates`, and snapshots the rate onto the `payouts` batch so a later rate change never alters a settled batch. After applying, run `get_advisors`.
+> **Note for Claude Code:** there is **deliberately no per-booking ledger** — `bookings` carries no `platform_fee`/`barber_amount`, and there is **no `transactions` table** to insert into. The webhook (Step 6) only flips `bookings.status` to `paid`, stamps `paid_at`, and records `stripe_payment_intent_id`; "money in" = the `paid` booking's `price` snapshot (M1.2). The `stripe_payment_intent_id` is not money data — it's a pointer to the Stripe payment for **reconciliation** (verify the charged amount via the Stripe MCP's PaymentIntent/Charge reads keyed off it) and a **hard idempotency backstop** (the UNIQUE index). M2.2 computes `platform_cut` / `shop_cut` at payout-build time by summing the admin's picked `paid` bookings × `commission_rates`, and snapshots the rate onto the `payouts` batch so a later rate change never alters a settled batch. **After applying: run `get_advisors`, then regenerate `src/integrations/supabase/types.ts` (`generate_typescript_types`)** so the new `commission_rates` type + the `bookings.stripe_payment_intent_id` column exist before you write the routes ([[supabase-best-practice]] Rules 2 + 6).
 
 ---
 
@@ -148,35 +150,35 @@ create unique index if not exists uniq_bookings_pi on public.bookings(stripe_pay
 The route takes a `pending_payment` booking the dialog created, reads its `price` snapshot server-side, and builds a **dynamic** Checkout Session. The Stripe `unit_amount` is the whole-unit `price` scaled into **Stripe's smallest unit for the currency**: **TWD is a 2-decimal currency in Stripe** (NOT on Stripe's zero-decimal list), so `unit_amount = price × 100` — a NT$300 cut → `30000` (= NT$300.00). Only Stripe's *true* zero-decimal currencies (`jpy`, `krw`, …) use `× 1`. **Do NOT drive the factor off `platform_settings.currency_minor_units`** — that column is a *display* concept (`0` = show whole TWD), a different thing from Stripe's per-currency exponent; scale off the zero-decimal set below. Have Claude Code write it, then push (recall the GitHub PAT from Secrets Manager — don't re-ask):
 
 ```ts
-// app/api/bookings/checkout/route.ts  (Next.js App Router)
+// api/bookings/checkout.ts  — Vercel serverless function (this course's Vite-SPA default)
 import Stripe from 'stripe'
-import { NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase/server' // service-role, server only
+import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { supabaseAdmin } from './_supabaseAdmin.js'   // service-role client — NOTE the .js ESM extension
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
 
-export async function POST(req: Request) {
-  const { booking_id } = await req.json()
-  const supabase = createServiceClient()
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' })
+  const { booking_id } = req.body                    // Vercel Node auto-parses JSON bodies (fine here — NOT the webhook)
 
   // Load the pending_payment booking + its price SNAPSHOT (set at creation in M1.2) — never trust a price from the client.
   // bookings has NO barber_id AND NO start_slot_id — the barber is reached through the SERVICE:
   // bookings.service_id → services.barber_id → barbers. (The slots live in booking_slots; we don't need them here.)
-  const { data: booking } = await supabase
+  const { data: booking } = await supabaseAdmin
     .from('bookings')
     .select('id, customer_id, status, price, services(name, barber_id, barbers(id, name))')
     .eq('id', booking_id)
     .single()
 
   if (!booking || booking.status !== 'pending_payment') {
-    return NextResponse.json({ error: 'booking not payable' }, { status: 400 })
+    return res.status(400).json({ error: 'booking not payable' })
   }
 
   const barberId   = booking.services.barber_id               // derived via the service
   const barberName = booking.services.barbers.name
 
   // Read the currency from platform_settings (created in M1.1) — do NOT hard-code TWD.
-  const { data: cfg } = await supabase
+  const { data: cfg } = await supabaseAdmin
     .from('platform_settings')
     .select('currency')
     .single()
@@ -187,7 +189,7 @@ export async function POST(req: Request) {
   const factor = ZERO_DECIMAL.has(cfg!.currency.toLowerCase()) ? 1 : 100
   const unitAmount = booking.price * factor
 
-  const origin = req.headers.get('origin')!
+  const origin = req.headers.origin as string
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     line_items: [{
@@ -207,9 +209,11 @@ export async function POST(req: Request) {
     cancel_url: `${origin}/barbers/${barberId}`,
   })
 
-  return NextResponse.json({ url: session.url })
+  return res.status(200).json({ url: session.url })
 }
 ```
+
+> **Next.js variant (only if you scaffolded App Router):** file `app/api/bookings/checkout/route.ts`; `export async function POST(req: Request)`; read the body with `const { booking_id } = await req.json()`; build the same session; return `NextResponse.json({ url: session.url })`. The currency logic is identical — only the handler shell differs.
 
 > **Note for Claude Code:** the **`unit_amount` scaling** is the #1 foot-gun — scale by Stripe's smallest-unit factor for the currency, and **do NOT drive it off `platform_settings.currency_minor_units`** (that's display-only, a *different* thing from Stripe's exponent). **TWD is 2-decimal in Stripe**, so `factor = 100`: a NT$300 cut is `unit_amount: 30000` (= NT$300.00). The wrong version here is the *reverse* of the usual reflex — someone "knows TWD looks like whole dollars" and sends `× 1` → `300` = **NT$3.00 ≈ US$0.10**, which is **below Stripe's ~US$0.50 minimum, so the Checkout Session is rejected and the customer never reaches the payment page** (empirically confirmed: `price 300 → 30000 → succeeded`; `× 1 → 300 → rejected`). Verify by reading the charged `amount` on the PaymentIntent/Charge, not by eyeballing. **Do NOT copy `stripe-mysite`'s TWD handling if it treats TWD as zero-decimal** — that's the same inverted bug. Stash `booking_id` in **BOTH** `metadata` and `client_reference_id` ([[stripe-best-practice]] Rule 6) — the webhook reads `metadata.booking_id`, which your authed server set and the customer cannot forge (Rule 10); the barber/slots are derivable from the booking, so they don't go in the metadata. Never look the booking up by email/customer.
 
@@ -230,41 +234,50 @@ At this point the booking is still `pending_payment` — it only becomes `paid` 
 This is the **only** route that changes booking state. Its entire job is: flip `pending_payment → paid` and stamp `paid_at`. **No split, no transactions row.** Have Claude Code write it and push:
 
 ```ts
-// app/api/stripe/webhook/route.ts
+// api/stripe/webhook.ts  — Vercel serverless function (this course's Vite-SPA default)
 import Stripe from 'stripe'
-import { NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase/server'
+import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { supabaseAdmin } from '../_supabaseAdmin.js'   // service-role client — NOTE the .js ESM extension
+
+// REQUIRED: turn OFF the body parser so we can read the RAW bytes for signature verification.
+// A Vercel Node function auto-parses the body by default, which would break the HMAC.
+export const config = { api: { bodyParser: false } }
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
 // NOTE: no PLATFORM_RATE here — the webhook does NOT compute the split. The rate lives
 // in the commission_rates table and the split is computed at payout-build time (M2.2).
 
-export async function POST(req: Request) {
-  const body = await req.text()                     // RAW body — never req.json() first
-  const sig = req.headers.get('stripe-signature')!
+// buffer the raw request stream (App Router's `await req.text()` does NOT exist here)
+async function rawBody(req: VercelRequest): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+  return Buffer.concat(chunks)
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const buf = await rawBody(req)                        // RAW bytes — never req.body / JSON first
+  const sig = req.headers['stripe-signature'] as string
 
   let event: Stripe.Event
   try {
-    event = stripe.webhooks.constructEvent(body, sig, process.env.STRIPE_WEBHOOK_SECRET!)
+    event = stripe.webhooks.constructEvent(buf, sig, process.env.STRIPE_WEBHOOK_SECRET!)
   } catch {
-    return NextResponse.json({ error: 'signature verification failed' }, { status: 400 })
+    return res.status(400).json({ error: 'signature verification failed' })
   }
 
   if (event.type !== 'checkout.session.completed') {
-    return NextResponse.json({ received: true })    // ack unrelated events with 200
+    return res.status(200).json({ received: true })    // ack unrelated events with 200
   }
 
   const session = event.data.object as Stripe.Checkout.Session
   if (session.payment_status !== 'paid') {
-    return NextResponse.json({ received: true })     // only act on a real, paid session
+    return res.status(200).json({ received: true })     // only act on a real, paid session
   }
 
-  const bookingId = session.metadata?.booking_id     // your server set this — can't be forged
+  const bookingId = session.metadata?.booking_id        // your server set this — can't be forged
   if (!bookingId) {
-    return NextResponse.json({ error: 'missing booking_id metadata' }, { status: 400 }) // = your bug
+    return res.status(400).json({ error: 'missing booking_id metadata' }) // = your bug
   }
-
-  const supabase = createServiceClient()
 
   // FIRST TO PAY WINS: flip the BOOKING pending_payment → paid exactly once, at this transition,
   // and stamp paid_at. That is the WHOLE job — NO split is computed and NO ledger row is written
@@ -277,41 +290,42 @@ export async function POST(req: Request) {
   // IDEMPOTENCY: Stripe RETRIES any non-2xx within ~10s, and you'll resend the event in the
   // checklist. The .eq('status','pending_payment') guard is the idempotency source of truth —
   // a re-delivered event matches ZERO rows (the booking is already 'paid') and no-ops.
-  await supabase.from('bookings').update({
+  await supabaseAdmin.from('bookings').update({
     status: 'paid',
     paid_at: new Date().toISOString(),
     stripe_payment_intent_id: session.payment_intent as string, // reconciliation pointer + idempotency backstop
   }).eq('id', bookingId).eq('status', 'pending_payment') // guard: only the pending_payment row flips
 
-  return NextResponse.json({ received: true })
+  return res.status(200).json({ received: true })
 }
 ```
 
+> **Next.js variant (only if you scaffolded App Router):** file `app/api/stripe/webhook/route.ts`; `export async function POST(req: Request)`; read the raw body with `const body = await req.text()` (App Router does not auto-parse, so **no** `bodyParser:false` config); `constructEvent(body, sig, …)`; return `NextResponse.json({ received: true })`. Same guarded update; only the shell + raw-body mechanism differ.
+
 > **Note for Claude Code:** four rules from [[stripe-best-practice]] are load-bearing here:
-> - **Rule 2 raw-body verify:** `await req.text()` BEFORE `constructEvent`. `req.json()` re-serializes and breaks the HMAC → 400. (In the App Router the raw text is available directly; no `bodyParser:false` config needed as in the old Pages API.) **Vite-SPA track:** this is a Vercel serverless function instead — set `export const config = { api: { bodyParser: false } }` and buffer the raw stream yourself (`for await (const chunk of req) …`); App Router's `req.text()` does not apply. See the scaffold callout above + [[stripe-best-practice]] Rule 2's Vite variant.
+> - **Rule 2 raw-body verify (Vite-SPA default):** set `export const config = { api: { bodyParser: false } }` and **buffer the raw stream yourself** (`for await (const chunk of req) …`) BEFORE `constructEvent` — a Vercel Node function auto-parses the body otherwise, and any parse re-serializes and breaks the HMAC → 400. (*Next.js variant:* `await req.text()` reads the raw body directly, no `bodyParser` config.) See [[stripe-best-practice]] Rule 2's Vite variant.
 > - **Rule 3 idempotency via the status guard:** the `.eq('status','pending_payment')` guard makes the flip a no-op once the booking is already `paid`. Stripe retries non-2xx, and a re-delivery matches zero rows and must NOT re-stamp `paid_at`. The `bookings.stripe_payment_intent_id` UNIQUE index (added in Step 2) is a **hard backstop** on top of the status guard — a concurrent double-fire that raced past the status check fails the UNIQUE write.
 > - **Rule 1 webhook is the source of truth:** only this route writes `paid`. The success page never mutates.
 > - **Rule 9 state change exactly once at the right transition:** flip only on `checkout.session.completed` + `payment_status==='paid'`. The `.eq('status','pending_payment')` guard makes the flip safe under retries. The webhook does NOT compute any split — that's M2.2.
 
 ---
 
-### Step 7 — Exempt `/api/stripe/webhook` in middleware
+### Step 7 — Keep the SPA rewrite from swallowing `/api/*` (the `vercel.json` exemption)
 
-> **The silent-failure trap.** Your auth middleware redirects unauthenticated requests to `/login`. Stripe's webhook POST carries no user session, so middleware **307-redirects it to `/login`** and your handler never runs. Symptom: Stripe shows the event fired but delivery never returns 200; your logs show **ZERO hits**.
+> **The silent-failure trap (Vite-SPA default).** A Vite SPA needs a catch-all rewrite so client-side routes serve `index.html`. Written naively it **swallows `/api/*`** too — the webhook POST gets the HTML shell instead of your function, so Stripe shows the event "delivered" but your handler never runs. Symptom: zero hits in your function logs; the response is HTML, not JSON.
 
-Add the webhook path to the public allowlist / matcher exclusion:
+**Exclude `/api/` from the SPA rewrite in `vercel.json`:**
 
-```ts
-// middleware.ts
-export const config = {
-  // exclude /api/stripe/webhook (and static assets) from the auth matcher
-  matcher: ['/((?!api/stripe/webhook|_next/static|_next/image|favicon.ico).*)'],
-}
+```json
+// vercel.json
+{ "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }] }
 ```
 
-> **Vite-SPA track:** there is **no `middleware.ts`** — the equivalent trap is the `vercel.json` SPA catch-all rewrite swallowing `/api/*`. Instead of the matcher above, exclude `/api/` from the rewrite: `{ "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }] }`. Same silent failure (the webhook POST returns the HTML shell / never runs), different mechanism. See the scaffold callout + [[stripe-best-practice]] Rule 5's Vite variant.
+The `(?!api/)` negative-lookahead means every path EXCEPT `/api/*` rewrites to the SPA shell; `/api/*` falls through to your serverless functions. (This is the same rewrite the M1.2/M2.1 build relies on — confirm it's present and excludes `/api/`.)
 
-> **Note for Claude Code:** verify with `curl -i -X POST https://<app>.vercel.app/api/stripe/webhook` — you want a **400** (signature missing/invalid, i.e. the handler ran) or **200**, **NOT a 307** redirect to `/login` (Next.js) and **not the HTML `index.html` shell** (Vite — means the rewrite swallowed it). ([[stripe-best-practice]] Rule 5.)
+> **Next.js variant (only if you scaffolded App Router):** there's no SPA rewrite; the equivalent trap is auth **middleware** 307-redirecting the session-less webhook POST to `/login`. Exempt it in `middleware.ts`: `matcher: ['/((?!api/stripe/webhook|_next/static|_next/image|favicon.ico).*)']`. Same silent failure, different mechanism. See [[stripe-best-practice]] Rule 5.
+
+> **Note for Claude Code:** verify with a POST to the webhook path (URL-fetch MCP in Cowork; `curl -i` in CLI mode — the sandbox `curl` is proxy-blocked, [[supabase-best-practice]] Rule 7) — you want a **400** (signature missing/invalid, i.e. the handler ran) or **200** with a **JSON** body, **NOT the HTML `index.html` shell** (Vite — the rewrite swallowed it) and **not a 307** to `/login` (Next.js middleware). ([[stripe-best-practice]] Rule 5.)
 
 ---
 
