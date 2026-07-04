@@ -126,6 +126,32 @@ create policy "shops_owner_write" on public.barbers for all
 
 ---
 
+### Rule 6 — After EVERY migration, regenerate `src/integrations/supabase/types.ts` before writing UI against the new columns.
+
+> **The rule:** The app is typed off **`src/integrations/supabase/types.ts`**. The moment a migration adds/changes a table, view, column, or RPC, that file is **stale** — so **regenerate it immediately** (Supabase MCP **`generate_typescript_types`**, or `supabase gen types typescript`) and commit it **in the same change as the migration**, *before* writing any UI/route code against the new shape.
+
+**Why:** Stale types are a silent, recurring head-scratcher. Query a just-added column and TypeScript either errors ("property does not exist on type") on code that is actually correct, or — worse — a mistyped field access compiles against an old shape and fails at runtime. Students burn time debugging the *wrong layer* (their query) when the real cause is that `types.ts` predates the migration. Regenerating right after the migration keeps the compiler honest: the new `payouts` row type, the `owed_bookings` view, the `build_payout` RPC signature all appear, and the editor autocompletes them.
+
+**How to apply:**
+- Sequence every build step that migrates as: **(1) `apply_migration` → (2) `get_advisors` (Rule 2) → (3) `generate_typescript_types` → (4) write the UI/route.** Don't skip (3).
+- Commit the regenerated `types.ts` alongside the migration — never let the committed types drift behind the committed schema.
+- If a student sees "property X does not exist on type" for a column they *know* they added, the first move is **regenerate types**, not edit the query.
+
+---
+
+### Rule 7 — In Cowork, the sandbox `curl` is proxy-blocked; verify a live host with the URL-fetch MCP (and deep links via root-200 + the SPA rewrite), never `curl`.
+
+> **The rule:** When a checklist/build step needs to confirm the **deployed** app responds (a Vercel URL, the custom domain), the Cowork **sandbox `curl` is proxy-blocked** — it returns `000/403` regardless of whether the site is up. A `curl` failure is **NOT** evidence the site is down. Verify live hosts with the **URL-fetch MCP** (`web_fetch_vercel_url` / `get_access_to_vercel_url`) or a browser. The `curl` blocks in the skills are the **CLI-mode** path only.
+
+**Why:** Every checklist that pokes the deployed app hits this same wall, and a student misreads the proxy `000` as "my deploy is broken" and debugs a non-problem. Making the URL-fetch tool the Cowork default turns a recurring false-failure into a non-event.
+
+**How to apply:**
+- **Cowork:** use `web_fetch_vercel_url` (fetches from outside the sandbox) or open the URL in a browser. Treat the fetch's `200`, not a `curl` exit code, as ground truth. **Also don't trust Vercel `get_project`'s `domains` array** for an attach check — it lags; the fetch is ground truth.
+- **SPA deep links (`/login`, `/barbers`, `/admin/payouts`):** the URL-fetch MCP **only fetches the root reliably** — for a subpath it returns *"Unable to create shareable URL…"*, which is a tool limitation, **not** a failure. This is a Vite **SPA**, so every non-`/api` path is served by the `index.html` shell via the `vercel.json` catch-all rewrite. Verify deep-link resolution by **(a) root `200` + (b) confirming the `"/((?!api/).*)" → /index.html` rewrite exists** — reserve real per-path checks for **browser navigation** (the decisive, student-performed test).
+- The **CLI-mode** `curl` blocks stay in the skills for students running a real shell — they're labeled CLI-mode; don't run them in the Cowork sandbox and conclude the site is down.
+
+---
+
 ## Things to actively watch out for
 
 1. **A raw `UPDATE … SET role='admin'` in the dashboard SQL editor** → Rule 1 (use a migration; a bad `WHERE` promotes everyone).
@@ -136,6 +162,9 @@ create policy "shops_owner_write" on public.barbers for all
 6. **The webhook can't flip a booking to `paid` (RLS denies it)** → Rule 4 (the webhook must use the **service-role** client; the publishable key can't write past RLS for a non-user actor).
 7. **A `unique(shop_id)` on `barbers` blocking a second barber, or a `unique(shop_id, month)` on `payouts` blocking a second batch** → Rule 5 (a shop runs MANY barbers AND has MANY payout batches; index `shop_id` on both, make neither unique; no-double-pay is on `bookings.payout_id`, not a unique on `payouts`).
 8. **Skipping `get_advisors` after a migration** → run it every time; it's the cheapest catch for an RLS gap before it ships.
+9. **`types.ts` left stale after a migration** → Rule 6 (regenerate `generate_typescript_types` right after the migration; a "property does not exist" TS error on a column you just added means stale types, not a bad query).
+10. **Reading a Cowork sandbox `curl 000/403` as "the deploy is down"** → Rule 7 (the sandbox `curl` is proxy-blocked; verify with `web_fetch_vercel_url`, and check SPA deep links via root-200 + the `vercel.json` rewrite, not a per-path fetch).
+11. **Trusting a local checkout over GitHub + Supabase** → the source of truth is **`main` on GitHub + the Supabase project's migration history**, not a local `src/`. `git pull` and confirm the migration list before starting a milestone (a local copy can be commits behind while the DB/deploy are ahead — e.g. local at M2.1 while the DB already has M2.2's `payouts`).
 
 ---
 
@@ -143,7 +172,7 @@ create policy "shops_owner_write" on public.barbers for all
 
 - **Multiple barbers/staff per barber / per-staff attribution + in-barber revenue split** — the course models one SHOP that may run many barbers and pays the shop; it does not split *within* a barber (Rule 5).
 - **Column-level encryption of bank fields / Supabase Vault for app data** — the shop's `profiles` bank columns are plain columns gated by RLS (shop + admin); field-level crypto is a prod hardening pass. (Vault's role in *this* course is discussed in [[aws-secrets-best-practice]], and it's not used for app data.)
-- **The simultaneous-click slot race** (DB-level locking / `select … for update` on a slot) — deferred until ~1,000 concurrent customers/barber; "first to pay wins" is sufficient. See [[m1.2-buyer-booking]].
+- **The simultaneous-click slot race** (DB-level locking / `select … for update` on a slot) — deferred until ~1,000 concurrent customers/barber; "first to pay wins" is sufficient. See [[m1.2-buyer-setup]].
 - **Read replicas / connection pooling tuning / PITR** — course runs at tens-of-rows scale.
 
 When a student asks "shouldn't we encrypt the bank field / handle the slot race?" → "Yes, for production. The course optimizes for the minimum correct multi-tenant data model with RLS as the boundary; the rest is a hardening pass once the milestones are stable."
@@ -152,7 +181,7 @@ When a student asks "shouldn't we encrypt the bank field / handle the slot race?
 
 ## Cross-references
 
-- [[m1.1-barber-shop-and-schedule]] — where `barbers`/`services`/`bookable_slots` + their RLS (Rules 2, 3, 5) are introduced, a shop can create MANY barbers, and the shop-level "payout settings" write the bank fields to `profiles`.
+- [[m1.1-seller-setup]] — where `barbers`/`services`/`bookable_slots` + their RLS (Rules 2, 3, 5) are introduced, a shop can create MANY barbers, and the shop-level "payout settings" write the bank fields to `profiles`.
 - [[m2.2-admin-to-seller-payment]] — the flexible per-shop `payouts` batches + the `owed_bookings` view, no-double-pay on `bookings.payout_id` (Rule 5), and the admin-only read of the shop's `profiles` bank fields (Rule 3).
 - [[m2.1-buyer-to-admin-payments-prerequisites]] — the admin promotion done as a migration (Rule 1).
 - [[m0-landing-page]] — the `profiles.role` stub these tables gate on.
