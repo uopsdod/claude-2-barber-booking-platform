@@ -134,8 +134,10 @@ create policy "shops_owner_write" on public.barbers for all
 
 **How to apply:**
 - Sequence every build step that migrates as: **(1) `apply_migration` → (2) `get_advisors` (Rule 2) → (3) `generate_typescript_types` → (4) write the UI/route.** Don't skip (3).
+- ⚠️ **`generate_typescript_types` returns the types to YOU (the agent) — it does NOT write the file.** The tool's result *is* the TypeScript source; you must **capture that output and overwrite `src/integrations/supabase/types.ts`** in the app repo yourself, then commit it. "Regenerate types" = call the tool **and** write the file. Skip the write and the repo's `types.ts` stays stale.
 - Commit the regenerated `types.ts` alongside the migration — never let the committed types drift behind the committed schema.
-- If a student sees "property X does not exist on type" for a column they *know* they added, the first move is **regenerate types**, not edit the query.
+- If a student sees "property X does not exist on type" for a column they *know* they added, the first move is **regenerate types (and write the file)**, not edit the query.
+- ⚠️ **You CANNOT run a local build/type-check in the Cowork sandbox to "confirm it's clean."** `npm ci` / `npm install` / even a single `npm i <pkg>` get **killed** (~40s process ceiling, no background jobs; no global `tsc`/`esbuild`/`bun`/`pnpm`). Verify instead by **static review** (imports resolve, names match the migration) + the **Vercel build log** (via the Vercel MCP; see Rule 7's scope caveat) — not a local `npm run build`. And note **`vite build` only type-STRIPS, it does NOT type-check** — a green Vercel build means "it compiled + bundled", **not** "the types are correct" (a real check needs `tsc --noEmit`, also not runnable in-sandbox). So a passing deploy is *not* proof of type correctness.
 
 ---
 
@@ -149,6 +151,7 @@ create policy "shops_owner_write" on public.barbers for all
 - **Cowork:** use `web_fetch_vercel_url` (fetches from outside the sandbox) or open the URL in a browser. Treat the fetch's `200`, not a `curl` exit code, as ground truth. **Also don't trust Vercel `get_project`'s `domains` array** for an attach check — it lags; the fetch is ground truth.
 - **SPA deep links (`/login`, `/barbers`, `/admin/payouts`):** the URL-fetch MCP **only fetches the root reliably** — for a subpath it returns *"Unable to create shareable URL…"*, which is a tool limitation, **not** a failure. This is a Vite **SPA**, so every non-`/api` path is served by the `index.html` shell via the `vercel.json` catch-all rewrite. Verify deep-link resolution by **(a) root `200` + (b) confirming the `"/((?!api/).*)" → /index.html` rewrite exists** — reserve real per-path checks for **browser navigation** (the decisive, student-performed test).
 - The **CLI-mode** `curl` blocks stay in the skills for students running a real shell — they're labeled CLI-mode; don't run them in the Cowork sandbox and conclude the site is down.
+- ⚠️ **If the Vercel MCP `list_projects` is EMPTY (or the project isn't visible), do NOT conclude the deploy is broken.** The connected Vercel account/team may be a *different* account than the one that owns the app's deployment — the connector is simply scoped elsewhere, so neither the deployment nor its build log is reachable via MCP. Treat "Vercel MCP can't see it" as a **connector-scope issue, not a deploy failure**: have the student confirm which Vercel account owns the project (or open the deployment URL in a browser themselves). This also removes the build-log verification path — fall back to static review (per Rule 6) + the student eyeballing the live site.
 
 ---
 

@@ -26,7 +26,29 @@ The three things you confirm here are what M1.1 builds on:
 - The `[[m1.1-seller-setup]]` build skill (or its checklist) detects M0 auth, the Supabase MCP connector, or the GitHub token is missing.
 
 **Opening line to the student (say something like):**
-> "M1.1 is the first milestone where Supabase holds *real* data — barbers, services, schedule slots — each locked down with Row Level Security. Almost everything it needs was already set up in M0, so I'll just confirm three carryovers are still good (your auth + `profiles.role`, the Supabase connection, and your cached GitHub token), do one quick read against the new tables' home, then we build. Let me check what's already there."
+> "M1.1 is the first milestone where Supabase holds *real* data — barbers, services, schedule slots — each locked down with Row Level Security. Almost everything it needs was already set up in M0, so I'll just confirm the carryovers are still good (**which repo holds your app**, your auth + `profiles.role`, the Supabase connection, and your cached GitHub token), do one quick read against the new tables' home, then we build. Let me check what's already there."
+
+---
+
+## Step 0 — Confirm the APP repo (there are TWO repos — capture the right one)
+
+**Do this FIRST — it's the single biggest time-sink if skipped.** This course has **two separate GitHub repos**, and M1.1's UI edits go in only one of them:
+- **The APP repo** (e.g. `barberly-landing-auth`) — the **Vite/React project Vercel deploys**: it has `package.json`, `src/`, the UI. **Every code edit in M1.1 happens here.**
+- **The course/SKILLS repo** (e.g. `claude-2-barber-booking-platform`) — on each milestone branch it holds **only `.claude/`**, **no app code**. Cloning it "to edit the UI" turns up nothing to edit.
+
+Ask the student for the **app repo URL** (the one connected to their Vercel project), and confirm it — echo it back and **store it for the build skill so it isn't rediscovered**:
+
+> "Which GitHub repo does your Vercel project deploy from? (That's the **app** repo — it should contain `package.json` + `src/`, not just a `.claude/` folder.) Paste the URL."
+
+Sanity-check it's the app, not the skills repo — a shallow ref/tree read is enough (don't clone the whole thing yet; the app repo commits `node_modules`/`dist` and is large):
+```text
+git ls-remote <app-repo-url>          → returns refs (the repo is reachable)
+# and confirm it has app code, not just .claude/ — e.g. the GitHub file list shows package.json + src/
+```
+- Has `package.json` + `src/` → ✅ that's the app repo; record its URL + default branch (`main`).
+- Only a `.claude/` folder → that's the **skills** repo, not the app. Ask again for the repo Vercel builds from.
+
+> **Note for Claude Code:** carry the confirmed app-repo URL into `[[m1.1-seller-setup]]` — wherever that skill says "the repo", it means **this** one. This one confirmation prevents the "cloned the wrong repo, nothing to edit" dead-end.
 
 ---
 
@@ -113,10 +135,13 @@ select to_regclass('public.barbers')          as barbers,
 
 ## Verify (all must pass)
 
+- ✅ **App repo confirmed** — you have the **app** repo URL (the one Vercel deploys, with `package.json` + `src/`), distinguished from the skills-only `.claude/` repo, and stored it for the build skill (Step 0).
 - ✅ **M0 auth + `profiles.role`** — `profiles` exists, `role` column present, allowlist `customer|shop|admin` (Step 1).
 - ✅ **Supabase MCP reachable** — `list_tables` returns the project's tables (incl. `profiles`); `get_advisors` is callable (Step 2).
 - ✅ **GitHub PAT cached** — discovered in Secrets Manager (whatever name), shape tolerated; AWS `[default]` still wired (Step 3).
 - ✅ **Clean schema slate** — `barbers` / `services` / `bookable_slots` are NULL (don't exist yet), ready for M1.1's migration (Step 4).
+
+> **If you later check the live deploy via the Vercel MCP and `list_projects` is EMPTY / the project isn't visible — do NOT conclude the deploy is broken.** The connected Vercel account/team may differ from the one that owns the app's deployment (the connector is scoped to a different account). Treat "Vercel MCP can't see it" as a **connector-scope** issue, not a deploy failure: have the student confirm which Vercel account owns the project (or just open the deployment URL themselves). ([[supabase-best-practice]] Rule 7.)
 
 ## Next step
 
