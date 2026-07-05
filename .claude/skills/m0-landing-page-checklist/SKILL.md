@@ -15,12 +15,16 @@ Verifies the student actually completed M0 — not just *thinks* they did. Peopl
 
 | Section | CLI mode tool | Cowork mode equivalent |
 |---|---|---|
-| A — GitHub repo | `gh repo view` / `gh api` | GitHub MCP, or open repo URL in browser |
-| B — Vercel deploy | `curl` | `mcp__vercel__*`, or open URL in browser |
-| C — Landing page contents | `curl … \| grep` | Playwright MCP, or student inspects in browser |
-| D — Auth + role | browser + Supabase MCP | Supabase MCP (preferred both modes) |
+| A — GitHub repo | `gh repo view` / `gh api` | **`git ls-remote` / `git fetch`** with the cached token (works in-sandbox), or the GitHub MCP / browser |
+| B — Vercel deploy | `curl` | **Vercel MCP `get_deployment`** for deploy state + a **web-fetch** for page content (NOT `curl`) |
+| C — Landing page contents | `curl … \| grep` | **Browser / Playwright MCP is the PRIMARY path** (the SPA renders client-side — raw HTML is nearly empty) |
+| D — Auth + role | browser + Supabase MCP | **Supabase MCP `execute_sql`** (reads `auth.users` fine) + browser for the interactive loop |
 
-In Cowork mode every Bash block below is CLI-only — use the equivalent. Don't try to install `gh`/`curl` in Cowork.
+> **Cowork reality — the sandbox `curl` is proxy-blocked (returns 403), so every `curl` block below is CLI-mode-only.** In Cowork:
+> - **GitHub (Section A):** `git ls-remote <url>` / `git fetch` with the cached PAT works **inside the sandbox** — use it; no `gh` install needed.
+> - **Vercel (Section B):** get deploy *state* from the **Vercel MCP `get_deployment`**, and page *content* from a **web-fetch tool** — not `curl`. **A plain web-fetch returns page CONTENT, not an HTTP status code**, so the "expect 200" checks below mean "distinguish the **SPA shell** (real page) from a **404 page**", not literally reading a `200`.
+> - **Landing contents (Section C):** use the **browser / Playwright MCP as the primary check** — the client-rendered SPA has only `<title>`/meta in raw HTML, so a grep is empty *by design*. Note **Chrome may not be connected** in Cowork; if so, this becomes a student-eyeballs-in-browser step.
+> - **Auth (Section D):** the **Supabase MCP `execute_sql`** reads `auth.users` (email, `email_confirmed_at`, `last_sign_in_at`) and `public.profiles` directly — this is the preferred method in **both** modes. The interactive parts (a live sign-in/sign-out click loop) still need a **real browser** — mark those student-performed, not scriptable.
 
 ## How to run
 
@@ -40,36 +44,48 @@ Ask the student for:
   ```bash
   gh repo view <owner>/<repo> --json name,visibility,defaultBranchRef
   ```
+  **Cowork:** `git ls-remote https://github.com/<owner>/<repo>.git` (with the cached PAT) returns refs → the repo exists and is reachable; this works **inside the sandbox** (no `gh` needed). Confirm **public** by opening the repo URL, or via the GitHub MCP.
 - **A2** Recent commit (Lovable sync + the deployable-build push from Step 6):
   ```bash
   gh api repos/<owner>/<repo>/commits --jq '.[0].commit.message' | head -1
   ```
-  *Recovery if missing:* re-connect GitHub in Lovable (M0 Step 3) / re-push (Step 6).
+  **Cowork:** `git fetch <url> main` then read the fetched head's log — the latest commit message shows the Step-6 deployable-build push. *Recovery if missing:* re-connect GitHub in Lovable (M0 Step 3) / re-push (Step 6).
 
 #### Section B — Vercel deploy
-- **B1** Live URL returns 200:
+- **B1** The deployment is live/**READY** and the root serves the app:
   ```bash
+  # CLI mode only (sandbox curl is proxy-blocked — see the Cowork note):
   curl -sS -o /dev/null -w "%{http_code}\n" https://<app>.vercel.app
   ```
-- **B2** Auto-deploying from GitHub — confirm the Vercel project's Git connection points at the repo from A1. *Recovery:* re-import the repo (M0 Step 7).
+  **Cowork:** read deploy *state* with the **Vercel MCP `get_deployment`** (expect `state: READY`), and confirm the root serves the app by **web-fetching** the URL and seeing the SPA shell (the `<title>` + app root div), not an error page.
+- **B2** Auto-deploying from GitHub — confirm the Vercel project's Git connection points at the repo from A1 (Vercel MCP `get_project` / the dashboard). *Recovery:* re-import the repo (M0 Step 7).
 - **B3** **Deep links work (SSR-vs-SPA trap):** `/login` does NOT 404:
   ```bash
+  # CLI mode only:
   curl -sS -o /dev/null -w "%{http_code}\n" https://<app>.vercel.app/login
   curl -sS -o /dev/null -w "%{http_code}\n" https://<app>.vercel.app/barbers
   ```
   Expect `200` on `/login`; `/barbers` 200 or redirect to sign-in. A **404** on `/login` = SSR shipped without a SPA fallback. *Recovery:* M0 Step 6.
+  > **Cowork:** a web-fetch returns page **content, not a status code** — so B3 becomes "**does `/login` return the SPA shell, or a 404 page?**" Web-fetch `…/login`: if you get the app shell (same `<title>`/root as `/`), the SPA fallback works ✅; if you get a Vercel/framework **404 page**, the SSR-vs-SPA trap is still there ❌. Don't look for a literal `200` — the fetch tool doesn't surface one.
 
 #### Section C — Landing page contents (the marketplace look, NOT 3 cards)
-- **C1** Hero/search + Login present:
+> **The browser / Playwright MCP is the PRIMARY check here — not a grep.** This is a client-rendered SPA: raw HTML from a fetch/`curl` contains only `<title>` + meta, so a content grep is **empty by design** (an empty grep is NOT a failure). Render the page and inspect the DOM. **Chrome may not be connected in Cowork** — if the Playwright/browser MCP isn't available, this is a **student-eyeballs-in-the-browser** step, not a scriptable one; report it as student-verified.
+- **C1** *(CLI-mode grep, best-effort only — expected to be near-empty for a SPA):*
   ```bash
   curl -sS https://<app>.vercel.app | grep -oiE "login|sign in|sign up|style|barber|popular|search" | sort | uniq -c
   ```
-  (A client-rendered SPA may return little — fall back to a browser/Playwright check.)
-- **C2** Browser check (Cowork or if C1 empty): confirm **all four marketplace sections** are visible — (1) serif hero with split photos + a search bar, (2) trust logo strip, (3) a **4-icon feature row**, (4) a **"Popular" grid** — and that it is **NOT** the old generic 3-feature-card hero.
+  If this returns little/nothing, that's the SPA rendering client-side — **go to C2**, don't mark ❌.
+- **C2** **Rendered check (the real test):** in the browser / Playwright MCP (or student eyeballing the live site), confirm **all four marketplace sections** are visible — (1) serif hero with split photos + a search bar, (2) trust logo strip, (3) a **4-icon feature row**, (4) a **"Popular" grid** — and that it is **NOT** the old generic 3-feature-card hero.
 
 #### Section D — Auth + role
 - **D1** The `/login` page shows a **Customer ↔ Shop tab/toggle** on sign-up.
-- **D2** **The decisive test:** sign up a brand-new email **as a Shop** on the **live Vercel site** (not a Lovable preview), then check the student's OWN Supabase → Authentication → Users (the new user appears there, not a Lovable-default backend).
+- **D2** **The decisive test:** sign up a brand-new email **as a Shop** on the **live Vercel site** (not a Lovable preview), then confirm the new user landed in the student's OWN Supabase (not a Lovable-default backend). **Verify via the Supabase MCP `execute_sql` against `auth.users`** — this reads auth users fine (it is the codified D-section method; the MCP does surface `auth.users`):
+  ```sql
+  -- via Supabase MCP execute_sql
+  select email, email_confirmed_at, last_sign_in_at, created_at
+  from auth.users order by created_at desc limit 3;
+  ```
+  Expect the just-signed-up email at the top. (`email_confirmed_at` set = confirmation done or disabled; `last_sign_in_at` set = the sign-in in D4 worked.)
   > If sign-up fails on the live site or the user lands in the wrong (Lovable-default) backend, the usual cause is the **Vercel env vars**: the code was pointed at the new Supabase (build Step 8.2) but the matching `*_SUPABASE_URL` / `*_SUPABASE_PUBLISHABLE_KEY` were **not** added to Vercel + redeployed (Step 8.3). Fix that first, then re-run D2. (`VITE_*` names for a Vite app, `NEXT_PUBLIC_*` for Next.js.)
 - **D3** **The `profiles.role` stub works** — the new shop sign-up created a `profiles` row with `role = 'shop'`:
   ```sql
@@ -84,7 +100,7 @@ Ask the student for:
          (select count(*) from public.profiles) as profiles;
   ```
   The two counts must be **equal**. If `profiles < users`, the backfill didn't run — re-apply the Step 9 migration (the `insert … select from auth.users on conflict do nothing` block).
-- **D4** Sign-in AND sign-out both work on the live site (close the loop).
+- **D4** Sign-in AND sign-out both work on the live site (close the loop). **This is a MANUAL / browser step — mark it student-performed, not scriptable.** A live sign-in/sign-out click loop needs a real browser session (Chrome may not be connected in Cowork), so the assistant can't run it — have the **student** do it and report back. You *can* corroborate the sign-in half from D2's `auth.users.last_sign_in_at` (it's populated after a successful sign-in), but sign-**out** is browser-only.
   *Recovery:* redo M0 Step 8 (auth swap) and/or Step 9 (the `profiles` trigger).
 
 ## Reporting
@@ -95,15 +111,15 @@ Emit a table:
 |---|---|---|
 | A1 repo exists + public | ✅ / ❌ | |
 | A2 recent commit(s) | ✅ / ❌ | |
-| B1 Vercel 200 | ✅ / ❌ | |
+| B1 Vercel deploy READY + root serves app | ✅ / ❌ | Cowork: Vercel MCP `get_deployment` + web-fetch (not `curl`) |
 | B2 auto-deploy wired | ✅ / ❌ | |
-| B3 /login deep-link not 404 | ✅ / ❌ | SSR-vs-SPA trap |
-| C1/C2 marketplace sections (NOT 3-card) | ✅ / ⚠️ / ❌ | hero+search / logo strip / 4-icon row / Popular grid |
+| B3 /login deep-link not 404 | ✅ / ❌ | SSR-vs-SPA trap; Cowork: SPA shell vs 404 page (no literal 200) |
+| C1/C2 marketplace sections (NOT 3-card) | ✅ / ⚠️ / ❌ | browser/Playwright primary (SPA grep empty by design); Chrome may be student-verified |
 | D1 Customer/Shop role tab | ✅ / ❌ | |
-| D2 new user in student's Supabase | ✅ / ❌ | the key one |
-| D3 profiles.role stub populated | ✅ / ❌ | role copied from sign-up tab |
+| D2 new user in student's Supabase | ✅ / ❌ | the key one; verify via `execute_sql` on `auth.users` |
+| D3 profiles.role stub populated | ✅ / ❌ | role copied from sign-up tab (`execute_sql` on `public.profiles`) |
 | D3b no orphan auth users (counts match) | ✅ / ❌ | Step 9 backfill caught pre-existing signups |
-| D4 sign-in + sign-out loop | ✅ / ❌ | |
+| D4 sign-in + sign-out loop | ✅ / ❌ | **manual/browser** (student-performed); sign-in corroborated by `last_sign_in_at` |
 
 **Verdict:**
 - All ✅ → 「M0 驗收通過 ✅ READY for M1.1。跟我說『啟動 M1.1』，我們來讓理髮師開店、建立預約排程。」
@@ -222,7 +238,7 @@ Recall the GitHub token from Secrets Manager (barber-project/github) to authenti
 - Wait for it to become **Healthy** → get the **Project URL** → get the **Publishable API Key**.
 - Replace the URL and publishable-key values in the prompt (the env-var names are `NEXT_PUBLIC_SUPABASE_*` for a Next.js app, `VITE_SUPABASE_*` for a Vite app — the prompt covers both).
 
-Prompt """ (source: https://github.com/uopsdod/claude-2-flight-price-notifier/blob/m0-landing-page/.claude/skills/m0-landing-and-signin/SKILL.md)
+Prompt """ (source: https://github.com/uopsdod/claude-2-barber-booking-platform/blob/m0-landing-page/.claude/skills/m0-landing-page/m0-landing-page.txt)
 Switch this project's backend from Lovable Cloud to the user's own Supabase project. Do NOT keep any Lovable Cloud references.
 
 Specifically:

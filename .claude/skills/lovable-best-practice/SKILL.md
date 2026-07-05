@@ -93,6 +93,7 @@ The **hard rules** apply identically in both modes — only the verification mec
 - The M0 prompt explicitly says: *do NOT create `barbers`/`bookings`/`profiles` tables; only use `auth.users`; capture the role in auth user metadata.*
 - Reviewing a Lovable diff, watch for `supabase.from(...)`, new `.sql` migrations, or "create table" prompts → **block them** in M0: 「M0 只用 auth metadata 存 role，資料表等 M1.1 用 migration 建。」
 - The one exception is **your** Step 9 `profiles` migration — that's intentional and trigger-driven, not a Lovable table.
+- **Expected carryover (NOT a bug):** because `profiles` only exists from M0 Step 9 onward while the app's auth/routing is built at M0 Step 1, **the M0 app reads role from `user_metadata.role`** — that's correct for M0's own timeline (there's no `profiles` table to read for most of M0). **M1.1 is where the app switches to reading `profiles.role`** ([[m1.1-seller-setup]] Step 1, item 3 — the first edit of that milestone). Don't try to make M0 itself read `profiles.role`; leaving it on `user_metadata` in M0 and switching in M1.1 is the intended path, not a divergence to fix in M0.
 
 ---
 

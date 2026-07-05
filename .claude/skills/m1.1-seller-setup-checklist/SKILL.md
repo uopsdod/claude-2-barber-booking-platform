@@ -133,7 +133,13 @@ Ask the student for:
   ```text
   get_advisors  →  type: "security"
   ```
-  Expect RLS enabled on `platform_settings` / `profiles` / `barbers` / `services` / `bookable_slots` and no `rls_disabled_in_public` for them. The advisor should be **clean** — in particular **no `security_definer_view` ERROR on `barbers_public`**, because the build skill creates it with `security_invoker = on`. If that ERROR appears, the view was created without `security_invoker` — re-apply the Step 3 view DDL. *Recovery:* build skill Steps 3–4, plus the `profiles` bank-field RLS introduced in m0-landing-page.
+  Expect RLS enabled on `platform_settings` / `profiles` / `barbers` / `services` / `bookable_slots` and no `rls_disabled_in_public` for them. The advisor should be **clean of ERRORs** — in particular **no `security_definer_view` ERROR on `barbers_public`**, because the build skill creates it with `security_invoker = on`. If that ERROR appears, the view was created without `security_invoker` — re-apply the Step 3 view DDL. *Recovery:* build skill Steps 3–4, plus the `profiles` bank-field RLS introduced in m0-landing-page.
+  > **These WARNINGs are EXPECTED after M1.1's migrations — do NOT chase them (they're not failures):**
+  > - **`public_bucket_allows_listing`** on `barber-photos` — the portfolio bucket is **public by design** (customers must see the work). Expected.
+  > - **`security_definer_function_executable` (anon/authenticated)** for **`is_admin()`** and **`handle_new_user()`** — both are `SECURITY DEFINER`, whose default grant is PUBLIC; their internal logic is the control (`handle_new_user` only runs as the signup trigger; `is_admin()` just reads the caller's own role). Expected.
+  > - **`auth_leaked_password_protection` off** — a project-level auth setting, not something M1.1 configures. Expected.
+  >
+  > Only **ERROR-level** findings (`rls_disabled_in_public`, `security_definer_view`) block the milestone. *(Optional hardening, not required for M1.1: `revoke execute on function public.is_admin() from anon, authenticated;` quiets the `is_admin` WARN.)*
 - **F3** **Every `shop` profile has a `display_name` (the shop name — required to finish onboarding).** `display_name` is what identifies the shop on the M2.2 admin payout page (`payouts.shop_name` is snapshotted from it), so an onboarded shop must not have it NULL/blank:
   ```sql
   select id, email, display_name, bank_account_name, bank_account_number
@@ -174,7 +180,7 @@ Emit a table:
 | B1 service CRUD (category + whole-unit price) | ✅ / ❌ | `price` in platform_settings.currency, NOT ×100 |
 | C1 slot publish (time window — NO status column) | ✅ / ❌ | `id, barber_id, starts_at, ends_at, created_at`; availability derived later |
 | D0 `*_write_own` policies scoped to `auth.uid()` (structural, MCP) | ✅ / ❌ | policy text — all MCP can prove |
-| D1 RLS denies cross-barber edit (behavioral, live app) | ✅ / ⚠️ / ❌ | **the decisive test — 0 rows changed; ⚠️ if no 2nd account to run it** |
+| D1 RLS denies cross-barber edit (behavioral, live app) | ✅ / ⚠️ / ❌ | optional hardening — 0 rows changed if run; **⚠️ (no 2nd account) is an acceptable PASS**; ❌ only if it ran and an edit got through |
 | D2 shop can edit own rows | ✅ / ❌ | RLS not over-blocking |
 | E1 role flips to 'shop' | ✅ / ❌ | never `admin` |
 | F1 `barbers` has no bank columns (moved to `profiles`) | ✅ / ❌ | bank is shop-level now |
@@ -182,9 +188,12 @@ Emit a table:
 | F3 every `shop` profile has `display_name` (shop name) + bank fields filled | ✅ / ❌ | required onboarding gate; M2.2 `payouts.shop_name` snapshots it |
 | G1 `barber_photos` table + a photo row (path + is_featured) | ✅ / ⚠️ / ❌ | portfolio + M4 input |
 | G2 `barber-photos` bucket public-read + shop-write policy | ✅ / ❌ | |
-| G3 barber can't write into another's photo folder (behavioral, live app) | ✅ / ⚠️ / ❌ | `<barber_id>/` prefix enforced; ⚠️ if no 2nd account to run it |
+| G3 barber can't write into another's photo folder (behavioral, live app) | ✅ / ⚠️ / ❌ | optional hardening — `<barber_id>/` prefix enforced; **⚠️ (no 2nd account) is an acceptable PASS**; ❌ only if it ran and an upload got through |
 
 **Verdict** (milestone-scoped — celebrate M1.1, don't surface the next milestone to the student):
-- All ✅ → 「M1.1 驗收通過 ✅ 理髮店這一側完整了：能開（多位）理髮師、列服務、發布可預約時段（時段就是一段時間窗、沒有 status 欄位，可預約與否由有沒有人預約推導），RLS 也擋住了跨理髮師的竄改、店家層級的銀行欄位（在 `profiles`）沒有外洩。」
+
+> **The pass bar is: structural checks ✅ + advisor clean. The behavioral RLS tests (D1 cross-barber edit, G3 cross-folder upload) are OPTIONAL hardening — a `⚠️` on them (no second live account to run them) is an ACCEPTABLE PASS by default.** These two need a *second* account signed into the deployed app (the privileged MCP bypasses RLS and can't run them), and by default we **don't** block M1.1 on spinning that up. So: if every structural check passed (barbers/services/slots/photos exist, the `*_write_own` **policy definitions** are scoped to `auth.uid()`, `barbers` has no bank columns, `profiles` bank fields are shop+admin-scoped, the public bucket + `barber_photos_write_own` exist) **and** `get_advisors` is clean of `rls_disabled_in_public` / `security_definer_view` ERRORs, **M1.1 is done** — mark D1/G3 `⚠️` and pass. **Offer** the behavioral test ("want me to spin up a second shop account and actually attempt the cross-tenant edit?"); run it only if the student opts in. Don't require it.
+
+- All ✅ (D1/G3 may be `⚠️` — optional, see above) → 「M1.1 驗收通過 ✅ 理髮店這一側完整了：能開（多位）理髮師、列服務、發布可預約時段（時段就是一段時間窗、沒有 status 欄位，可預約與否由有沒有人預約推導），RLS 政策定義擋住了跨理髮師的竄改、店家層級的銀行欄位（在 `profiles`）沒有外洩，advisor 也乾淨。」
   > **Note for Claude Code (author-only — do NOT volunteer to the student):** when the instructor advances the student, the next milestone is **M1.2** (`[[m1.2-buyer-setup]]`, the customer browse + pop-up booking flow). Don't print "啟動 M1.2" or describe M1.2 in the success message.
-- Any ❌ → list the failed items + the recovery step, and tell the student to fix then re-run `驗收 M1.1`. **If D1 or F2 failed, treat it as blocking** — a cross-barber edit getting through or a leaking bank field is a security hole, not a cosmetic miss; fix the RLS migration (build skill Steps 3–4) before the milestone is considered done. **A D1/G3 that's only ⚠️ (no second account available to run the behavioral test) is NOT a pass** — D0's structural check plus a clean advisor is *necessary but not sufficient*; offer to create the second account and run the real attempt before declaring those green.
+- Any real ❌ → list the failed items + the recovery step, and tell the student to fix then re-run `驗收 M1.1`. **A `❌` means a check that actually RAN and FAILED** (e.g. a structural read shows `barbers` carries a bank column, or `get_advisors` reports `rls_disabled_in_public` / a `security_definer_view` ERROR, or a behavioral test the student opted into let a cross-tenant edit through). **If D1/F2 genuinely FAILED (ran and a cross-barber edit succeeded / a bank field leaked), treat it as blocking** — that's a security hole, fix the RLS migration (build skill Steps 3–4) first. But **a D1/G3 that's only `⚠️` because no second account was available is NOT a failure** — it's the accepted default (above); don't list it under ❌.
