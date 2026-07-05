@@ -87,7 +87,10 @@ Ask the student for:
   ```
   Expect, on `bookings`: select/insert/update scoped to `auth.uid() = customer_id`, plus a read-only shop select that **joins through the service** (`exists (select 1 from services sv join barbers b on b.id = sv.barber_id where sv.id = bookings.service_id and b.shop_id = auth.uid())`) — since bookings has no `barber_id`, the shop is reached via the service. On `booking_slots`: a public-select policy (`using (true)`, so the anti-join can read it) + a write policy scoped to the owning booking's customer. *Recovery:* M1.2 Step 1.
 
-- **A3** No advisor warnings on `bookings` / `booking_slots` — run the Supabase MCP `get_advisors` (security) and confirm no "RLS disabled" / "policy missing" on either table. *Recovery:* fix the policy, re-run. (Expected NON-issues you can ignore: `create_booking` / `free_slots_on_cancel` flagged `security_definer_function_executable` — they are **intentionally** `SECURITY DEFINER` so the booking RPC can insert past RLS for the logged-in customer and the cancel trigger can delete `booking_slots`; they operate on `auth.uid()` and are callable only by `authenticated`/`anon`. Also `public_bucket_allows_listing` on `barber-photos` is by design.)
+- **A3** No advisor ERRORs on `bookings` / `booking_slots` — run the Supabase MCP `get_advisors` (security) and confirm no `rls_disabled_in_public` / `security_definer_view` / missing-policy on either table. *Recovery:* fix the policy (or the view's `security_invoker`), re-run. **Expected NON-issues (do NOT chase — the build already hardened the rest):**
+  - `create_booking` flagged `security_definer_function_executable` for **`authenticated`** — **intended**: it's `SECURITY DEFINER` so a logged-in customer's booking inserts past RLS, and the build **revokes it from `anon`** (a booking needs `auth.uid()` anyway). Keep it callable by `authenticated`.
+  - `public_bucket_allows_listing` on `barber-photos` — the portfolio bucket is public **by design**.
+  > If you *also* see `function_search_path_mutable` on `set_updated_at`, or `free_slots_on_cancel`/`create_booking` executable by **`anon`**, the build's Step 1c hardening (`set search_path = public` + the two `revoke` lines) didn't land — re-apply it (M1.2 Step 1c); those are no longer "expected" once the build hardens them.
 
 - **A3a — SMOKE-TEST `create_booking` LIVE (the decisive backend check — schema inspection is NOT enough).** A green "columns + constraints look right" does **not** prove the RPC runs: it once shipped with its loop variables declared in a nested `declare … begin … end` block, so a post-loop reference raised `column "v_count" does not exist` and **booking was 100% broken while every schema check passed**. So **actually call the function and roll it back**, as a real logged-in customer (the RPC uses `auth.uid()`), via the Supabase MCP `execute_sql`:
   ```sql
@@ -96,17 +99,24 @@ Ask the student for:
   set local role authenticated;
   select set_config('request.jwt.claims',
     json_build_object('sub', (select id from public.profiles where role='customer' order by created_at desc limit 1))::text, true);
-  -- a start slot on a barber that has a service, not already held:
+  -- ⚠️ pick the SERVICE on the SAME BARBER as the chosen slot, or create_booking correctly raises
+  --    "service and slot belong to different barbers" — that's a BAD TEST INPUT, not an RPC failure.
+  with pick as (
+    select sl.id as slot_id, sl.barber_id
+    from public.bookable_slots sl
+    where sl.starts_at > now()
+      and not exists (select 1 from public.booking_slots bs where bs.slot_id = sl.id)
+    order by sl.starts_at limit 1
+  )
   select public.create_booking(
-    (select sv.id from public.services sv limit 1),
-    (select sl.id from public.bookable_slots sl
-       where sl.starts_at > now()
-         and not exists (select 1 from public.booking_slots bs where bs.slot_id = sl.id)
-       order by sl.starts_at limit 1)
+    (select sv.id from public.services sv, pick
+       where sv.barber_id = pick.barber_id
+       order by sv.required_slots asc limit 1),   -- smallest required_slots → most likely to fit
+    (select slot_id from pick)
   ) as new_booking_id;
   rollback;
   ```
-  Expect a **non-null `new_booking_id`** returned (then rolled back — no row remains). If it raises `column "v_count" does not exist` (or any error other than a legitimate "not enough consecutive slots" / "just taken"), the RPC is broken. *Recovery:* re-apply `create_booking` with **all** PL/pgSQL variables in one **top-level** `declare` (M1.2 Step 1c — the loop vars must NOT be in a nested block). Regenerate `src/integrations/supabase/types.ts` too if buyer queries type as `never`.
+  Expect a **non-null `new_booking_id`** returned (then rolled back — no row remains). If it raises `column "v_count" does not exist` (or any error other than a legitimate "not enough consecutive slots" / "just taken"), the RPC is broken. **A "service and slot belong to different barbers" error means the TEST picked a mismatched pair** (the query above prevents that — use it, don't pick service+slot independently). *Recovery:* re-apply `create_booking` with **all** PL/pgSQL variables in one **top-level** `declare` (M1.2 Step 1c — the loop vars must NOT be in a nested block). Regenerate the app's Supabase types file too if buyer queries type as `never`.
 
 #### Section B — Buyer pages reachable
 
@@ -234,7 +244,7 @@ Emit a table:
 | A1a `bookings_with_start` view exposes derived `starts_at`/`ends_at` | ✅ / ❌ | MIN/MAX over booking_slots |
 | A1b `booking_slots` join table + `UNIQUE(slot_id)` guard; booking holds N rows | ✅ / ❌ | N = service.required_slots |
 | A2 RLS own-rows policies present (shop read joins through service; booking_slots public-select) | ✅ / ❌ | |
-| A3 no advisor warnings on `bookings`/`booking_slots` | ✅ / ⚠️ / ❌ | SECURITY DEFINER on the two funcs + public-bucket listing are by-design |
+| A3 no advisor ERRORs on `bookings`/`booking_slots` | ✅ / ⚠️ / ❌ | only expected WARNs left: `create_booking` (authenticated) + public-bucket listing; the rest are hardened in the build |
 | A3a **`create_booking` smoke test** returns a booking id (rolled back) | ✅ / ❌ | **decisive** — schema-looks-right ≠ RPC runs; catches the nested-declare scope bug |
 | B1 `/barbers` browse 200 | ✅ / ❌ | |
 | B2 `/barbers/[id]` 200 + no collision w/ `/shop/bookings` | ✅ / ❌ | uuid/int id route |

@@ -41,11 +41,15 @@ This milestone runs in **Cowork on Desktop**, same as M0/M1.1. The two backend t
 |---|---|---|
 | Apply the `bookings` migration + RLS | Supabase MCP `apply_migration` | same MCP call, or `supabase db push` against your migration file |
 | Verify a booking row / slot availability | Supabase MCP `execute_sql` | `psql` / Supabase SQL editor |
-| Build the buyer pages + dialog | Claude Code edits the repo, pushes to `main` (recall the GitHub PAT from Secrets Manager `barber-project/github`) | `git push` with a locally-authed `gh` |
+| Build the buyer pages + dialog | Claude Code edits **the app repo** (resolve it — see below), pushes to `main` (recall the GitHub PAT — **discover the secret, don't assume its path**) | `git push` with a locally-authed `gh` |
 
 **Delivery default — push straight to `main`, Vercel auto-deploys.** The M1.2 buyer UI is committed directly to `main`; Vercel auto-deploys to production on push using the cached GitHub PAT. **No feature-branch / PR step by default** (consistent with the no-Lovable-after-M0 workflow — from M1.1 on the UI is written in the repo). Don't ask the student which delivery model to use; this is it.
 
-> **Note for Claude Code (env gotcha):** if the working tree is a **Cowork connected-folder / outputs mount**, git may fail to `unlink` `.git` objects (the mount denies it), so `git commit`/`push` can't run in place. Workaround: `git clone` the repo into a plain `/tmp` dir, write the source files there, and commit + push from `/tmp` (PAT recalled from Secrets Manager). The Supabase MCP tool namespace is also session-specific (e.g. `mcp__<session-id>__…`), not the literal `mcp__claude_ai_Supabase__…` — call whichever variant your session exposes.
+> **⚠️ "the repo" = the APP repo (Vite/React, what Vercel deploys) — NOT the course/skills repo.** There are two: the **course/skills repo** holds only `.claude/` (README + skills, no app code), and the **app repo** (a separate repo — this run it was `barberly-landing-auth`, but **it differs per project, so RESOLVE it, don't hardcode**) is the one you edit. The `[[m1.2-buyer-setup-prerequisite]]` resolves and records the app-repo URL (from the Vercel deployment metadata `get_deployment → meta.githubRepo`, or reused from M1.1). Use that; cloning the skills repo "to build the buyer pages" finds nothing to edit.
+
+> **⚠️ Discover the GitHub PAT secret — do NOT assume its Secrets Manager path.** The secret's name/region **varies between project runs** (whoever provisioned it named it however — this run it was `github/personal-access-token` in us-east-1 as a **bare token string**, not the `barber-project/github` JSON some skills assume). So: `list-secrets` (check the common regions), **match by name pattern** (anything containing `github` / `pat` / `token`), then `get-secret-value`; **accept either a bare-string token OR a JSON-wrapped `{"pat":...}` value.** Find the PAT, don't assume where it lives.
+
+> **Note for Claude Code (Cowork git gotcha):** if the working tree is a **Cowork connected-folder / outputs mount**, git may fail to `unlink` `.git` objects (the mount denies it), so `git commit`/`push` can't run in place. Workaround: **`git clone` the app repo into `$HOME` (`/sessions/<id>/…`), NOT `/tmp`** (`/tmp` clones came back `nobody:nogroup`/corrupt in past runs), then write the source files there and commit + push from that clone (PAT from the discovered secret). **`git log -1` right after cloning** to confirm you're on the deployed tip (the app `main` can move mid-session). The Supabase MCP tool namespace is also session-specific (e.g. `mcp__<session-id>__…`), not the literal `mcp__claude_ai_Supabase__…` — call whichever variant your session exposes.
 
 All Supabase changes go through a **migration file / `apply_migration`** — never a raw ad-hoc `UPDATE`/`INSERT` against prod ([[supabase-best-practice]]).
 
@@ -131,8 +135,9 @@ create table if not exists public.bookings (
 );
 
 -- Keep updated_at honest: bump it on every row change.
+-- set search_path = public → avoids the function_search_path_mutable advisor WARN.
 create or replace function public.set_updated_at()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql set search_path = public as $$
 begin new.updated_at := now(); return new; end; $$;
 drop trigger if exists trg_bookings_updated_at on public.bookings;
 create trigger trg_bookings_updated_at
@@ -158,8 +163,17 @@ create index if not exists idx_booking_slots_booking on public.booking_slots(boo
 -- ── bookings_with_start: the booking + its DERIVED start/end time. ──
 -- There is no start_slot_id column on bookings; /bookings and any "sort/show by start
 -- time" read uses this view (MIN(starts_at)/MAX(ends_at) over the booking's slots).
--- RLS is inherited from the underlying bookings table.
-create or replace view public.bookings_with_start as
+-- ⚠️ security_invoker = true is REQUIRED. On Postgres 15+/Supabase a plain view runs with
+-- the VIEW OWNER's rights (security_definer) and BYPASSES the bookings RLS — so any customer
+-- querying this view (which /bookings does) would read EVERY customer's bookings, and
+-- get_advisors throws a security_definer_view ERROR. WITH (security_invoker = true) makes the
+-- view run as the CALLER, so it correctly inherits the bookings RLS (own-rows-only). This is
+-- the ONLY reason RLS is inherited — it is NOT automatic for a view. See [[supabase-best-practice]].
+-- (drop-then-create because `create OR REPLACE view` can't add the WITH option on a pre-existing
+--  view; the drop keeps re-runs idempotent.)
+drop view if exists public.bookings_with_start;
+create view public.bookings_with_start
+  with (security_invoker = true) as
 select b.*,
        (select min(s.starts_at) from public.booking_slots bs
           join public.bookable_slots s on s.id = bs.slot_id
@@ -312,13 +326,23 @@ drop trigger if exists trg_free_slots_on_cancel on public.bookings;
 create trigger trg_free_slots_on_cancel
   after update of status on public.bookings
   for each row execute function public.free_slots_on_cancel();
+
+-- Hardening (removes advisor WARNs; safe because of what each function is):
+--   create_booking needs auth.uid() → anon can never succeed anyway; keep it callable by
+--   AUTHENTICATED (a logged-in customer books), but revoke from anon.
+revoke execute on function public.create_booking(uuid, uuid) from anon;
+--   free_slots_on_cancel is a TRIGGER function, not an RPC — nobody should call it directly.
+--   Revoking execute does NOT stop the trigger from firing (triggers run as the table owner).
+revoke execute on function public.free_slots_on_cancel() from anon, authenticated;
 ```
 
 > **Note for Claude Code:** the **whole booking write is the RPC `create_booking`** — one transaction, so a half-held booking can never exist. The booking is created at `status='pending_payment'` (the default) — **that is M1.2's terminal state; don't set it to `paid`**. **N = `service.required_slots`** (read it straight off the service — NOT `ceil(duration/30)`; services carry no minutes). The `UNIQUE(slot_id)` on `booking_slots` is the entire no-double-book mechanism: if any of the N slots is already held, the insert raises `unique_violation` and the booking is rolled back; surface that as "those times were just taken". Don't engineer row-locks/retries (deferred until ~1,000 concurrent customers/barber). The **free-on-cancel trigger** is what makes a cancelled booking release its slots, so the plain `UNIQUE` correctly means "one *live* booking per slot".
 >
 > ⚠️ **Declare every PL/pgSQL variable at the top level — never in a nested block, then smoke-test the RPC before building any UI.** This function shipped once with `v_count`/`v_slots`/`v_prev_end` declared inside a nested `declare … begin … end` around the loop; those variables went out of scope when the block closed, so the post-loop `if v_count <> v_n` raised `column "v_count" does not exist` and **booking was 100% broken while the schema looked perfectly correct**. A "schema looks right" check does **not** prove the RPC runs. **The moment the migration applies, call it once and roll back** — as a real logged-in customer (so `auth.uid()` is set), e.g. `begin; select public.create_booking('<service>','<start_slot>'); rollback;` — and confirm it returns a booking id, not an error. Only then wire the UI.
 >
-> ⚠️ **Regenerate the Supabase TypeScript types right after this migration.** The generated `src/integrations/supabase/types.ts` is still at the M1.1 shape and knows nothing about `bookings` / `booking_slots` / `bookings_with_start` / `create_booking` — so every buyer-side typed query would resolve to `never`. Run `generate_typescript_types` (the MCP tool) and commit the result **before** building the pages. (A `vite build` uses esbuild and won't type-check, so wrong types won't *fail* the deploy — they'll just silently mistype every query; regenerate anyway.)
+> ⚠️ **Regenerate the Supabase TypeScript types right after this migration — and WRITE them to disk yourself.** The generated Supabase types file (locate it — usually `src/integrations/supabase/types.ts`, but confirm from the app's imports rather than assuming) is still at the M1.1 shape and knows nothing about `bookings` / `booking_slots` / `bookings_with_start` / `create_booking` — so every buyer-side typed query would resolve to `never`. **`generate_typescript_types` returns the TypeScript to YOU (the agent); it does NOT write the file** — capture its output, overwrite that file, and commit it **before** building the pages ([[supabase-best-practice]] Rule 6).
+
+> ⚠️ **Build gate: `vite build`, not `tsc`. Installs may exceed the per-call timeout — resume, don't give up.** A first `npm ci` can exceed the sandbox's per-call timeout; the pattern that works is **`timeout 43 npm ci` twice** (the first pass warms the npm cache, the second completes in ~8–29s), **then `npm run build`** (Vite/esbuild) runs cleanly in ~8s and **IS the real build gate.** Do **NOT** gate on `tsc --noEmit`: a fresh install throws hundreds of type errors across the vendored shadcn/Radix `ui/*` components (a React-types version mismatch) that have nothing to do with buyer code — **ignore `tsc`/`ui/*` noise**; `vite build` (esbuild, no type-check) is what proves the app bundles. (So a green `vite build` means "it compiled + bundled", not "types are perfect" — that's fine here; the Supabase types you just wrote are what keep the buyer queries honest.)
 
 ---
 
@@ -373,7 +397,7 @@ The booking write is the heart of M1.2 — and because a booking now spans **N c
 > - 一段 **Services** 區塊：列出這位理髮師的 `services`（名稱、分類、`price`、需要幾個時段 `required_slots`），每個服務可被選取。
 > - 一段 **Available slots** 區塊：用 **anti-join** 只顯示這位理髮師「還沒被佔用」的 `bookable_slots` —— 也就是 `not exists (select 1 from booking_slots bs where bs.slot_id = s.id)`。時段本身沒有 status 欄位；可預約與否是「有沒有 `booking_slots` 指到它」推導出來的（取消預約會刪掉 `booking_slots`，時段就自動釋出）。**重要**：因為一筆預約會佔用 N 個連續時段（**N = 該服務的 `required_slots`**，直接用，不是 ceil(duration/30)），選「開始時段」時要確認它後面有 **連續 N 個**都還沒被佔用的時段，才把它列為可選的開始時間。
 > - 一顆明顯的 **Book** 按鈕。**按下 Book 不要換頁** — 它會打開一個 pop-up dialog（下一步做）。
-> - 若使用者未登入，按 Book 時導去 `/login`，登入後回到本頁。
+> - 若使用者未登入，按 Book 時導去**這個 app 實際的登入路由**（登入後回到本頁）。**不要寫死 `/login`** —— 先看 `App.tsx` 的 `<Route>` 表，用它真正有的 sign-in 路由（這個 run 是 `/sign-in`＋`/sign-up`，一個 `LoginPage` 用 `initialMode` 切換、客人/店家用 toggle 而非 tab，`role` 預設 `customer`；別的 M0 run 可能叫 `/login`、`/auth`）。導到一個不存在的 `/login` 會 404。
 
 > **Note for Claude Code:** match a **standard marketplace product-detail layout**, and in particular **build the photo carousel** at the top (main image + prev/next arrows + thumbnail/dot nav + click-to-zoom lightbox) — the user explicitly called this out. Use the project's existing carousel primitive (shadcn `Carousel`/embla, Radix, etc.). The **carousel reads `barber_photos`** (created in M1.1), ordered by `sort_order` with `is_featured` first; files come from the public `barber-photos` bucket, so a plain public URL works (no auth to view). The available-slots list filters **via the anti-join against `booking_slots`** (a slot is offered when **no `booking_slots` row** references it) — there is **no `slot.status`** to read, and **no `status` filter** on the booking (the row-existence in `booking_slots` IS the hold, independent of `pending_payment`/`paid`). Because Step 2 inserts a `pending_payment` booking (+ its `booking_slots` rows) for the chosen slot, a freshly-booked slot **disappears** on the next read (intended; no double-offering). Keep the page on `/barbers/[id]`; the Book action is a dialog, not a navigation. The `is_featured` photos are the same set the **M4 egg unit** feeds to AI to draft the bio.
 
@@ -412,7 +436,7 @@ This is the signature interaction of M1.2. **The customer never leaves `/barbers
 > - 客人看不到別人的預約（這由 RLS 強制，不是只靠前端過濾）。
 > - **每筆還沒取消的預約，給一顆「取消 / Cancel」按鈕**：按下就 `update public.bookings set status='cancelled' where id = <該筆>`（RLS 保證只能改自己的）。**不要手動去刪 `booking_slots`** —— 資料庫上的 `trg_free_slots_on_cancel` trigger 會在 status 變 `cancelled` 時自動刪掉這筆的 `booking_slots`，那些時段就因為 anti-join 自動釋出、又能被別人約。取消後重新讀清單，該筆顯示 `cancelled`。取消失敗時，用 `errMessage()`（見 Step 5）把真正的 DB 訊息秀出來。
 
-Then have Claude Code **push to `main`** (recall the GitHub PAT from Secrets Manager `barber-project/github` — don't re-paste), let Vercel redeploy, and verify:
+Then have Claude Code **push to `main`** of the **app repo** (recall the GitHub PAT — discover the secret, don't assume its path; see the execution-mode notes — don't re-paste), let Vercel redeploy, and verify:
 
 > **ask:** "Run the `m1.2-buyer-setup-checklist` skill."
 
@@ -440,6 +464,7 @@ Then have Claude Code **push to `main`** (recall the GitHub PAT from Secrets Man
 15. **Assuming an in-app "Become a shop" upgrade button exists** — it doesn't necessarily. M1.1's skill described a customer→shop upgrade control, but it can be removed entirely (a shop comes from the sign-up **Barber** tab or a manual role change). Don't build the buyer header to depend on it, and don't re-introduce it into the customer surface.
 16. **Regenerating `types.ts` late (or never)** — after the `bookings`/`booking_slots` migration, regenerate the Supabase types **before** writing queries, or every buyer-side typed query is `never`-typed (Step 1c ⚠️). `vite build` won't catch it (esbuild, no type-check).
 17. **Ignoring the `timestamptz` timezone shift** — slots are `timestamptz`; the shop's published hours can render at a different wall-clock time in the customer's browser TZ. Pick one display TZ, label it, and don't drop/duplicate boundary slots when slicing by date (Step 5 ⚠️).
+18. **Hardcoding route names instead of resolving them from the app's router.** Two M0/M1.1 runs of the same prompt produce **different route names** — this run the customer landing was **`/app`** (an M0 "coming soon / become a shop" placeholder), the auth pages were **`/sign-in` / `/sign-up`**, and the post-login redirect went to `/app`, not `/barbers`. **Read `App.tsx`'s `<Route>` table** and key everything to the app's *actual* routes: add `/barbers`, `/barbers/:id`, `/bookings`; point the post-login **customer** redirect at the browse page; repurpose the existing customer landing (whatever it's named) into a hub if useful. The load-bearing rule is "**discover the route, don't assume `/barbers` or `/login`**" — a literal that's right for one run 404s on another.
 
 ## Expected duration
 
