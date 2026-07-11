@@ -6,6 +6,8 @@ description: 抽成制理髮師預約平台 Milestone 1.1 — let a shop list ON
 # M1.1 — 理髮店上架與預約排程（上架理髮師、建立預約排程）
 
 > **Workflow note (read first):** **Lovable is M0-only.** From M1.1 on the loop is **code → GitHub → Vercel**: Claude Cowork writes the code in the repo (Vite/React + Supabase migrations), commits + pushes (recall the PAT from Secrets Manager), and Vercel auto-deploys. There is **no "paste into Lovable" step** in this milestone — the verbatim blocks below are **specs to implement in the codebase**, not Lovable prompts.
+>
+> ⚠️ **"the repo" = the APP repo, NOT the course/skills repo. There are TWO repos.** (1) The **app repo** (the Vite/React project Vercel builds — e.g. `barberly-landing-auth`), which holds `package.json`, `src/`, the UI. **All the code edits below happen here.** (2) The **course/skills repo** (e.g. `claude-2-barber-booking-platform`), which on each milestone branch holds **only `.claude/`** — no app code. Cloning the skills repo "to edit the UI" turns up **nothing to edit** — a real time-sink. Everywhere this skill says "the repo", it means the **app repo**. The prerequisite captures its URL ([[m1.1-seller-setup-prerequisite]] Step 0) — use that, don't rediscover it.
 
 ## What this skill does
 
@@ -67,7 +69,14 @@ How the diagram maps to M1.1:
 
 ## Conversational flow
 
-You (Claude Code) drive the student through **6 steps**, in order. Don't dump them all at once — after each step, **wait for confirmation** before moving on.
+You (Claude Code) drive the student through **6 steps**, in order.
+
+> **Baked-in defaults — do these directly, don't ask the student to choose:**
+> - **Apply the migrations to the live Supabase now** (Steps 2/3/3a) — call `apply_migration` directly; **no "should I apply this now?" gate.**
+> - **Commit straight to `main`** (Step 6) — **no feature branches, no PR.** The app's `main` is the deployable branch Vercel builds ([[supabase-best-practice]] source-of-truth rule).
+> - **Structural + advisor-clean is the pass bar** — the behavioral RLS tests (checklist D1/G3, which need a second live account) are **optional**; don't block the milestone on them, and don't run them unless the student asks.
+>
+> Report what you did as you go; you don't need to pause for a "go ahead" before each `apply_migration` or push.
 
 1. Wire the shop role: the sign-up tab + a "Become a shop" flow set `profiles.role = 'shop'`
 2. Apply the `platform_settings` / `barbers` / `services` / `bookable_slots` / `barber_photos` migration (the `apply_migration` tool)
@@ -88,12 +97,16 @@ M0 already captures `customer` / `shop` from the sign-up role tab into `profiles
 >
 > 1. 登入後的導覽列／個人選單裡，若使用者目前是 **customer**，顯示一個 **「開店 / Become a shop」** 按鈕；點下去帶他到理髮店上架表單（Step 5 會建）。
 > 2. 註冊頁那個 **Customer ↔ Shop 分頁**：選 Shop 註冊的人（`role = 'shop'`），登入後應該直接看到理髮店後台入口（而不是顧客的瀏覽頁）。
-> 3. 角色判斷一律讀 **Supabase `profiles.role`**（M0 已建好的欄位），不要在前端自己存一份角色狀態。`shop` 才能看到 `/shop/bookings`；`customer` 看到的是「開店」入口。
-> 4. **登入後要「依角色導向」，不要一律丟到 `/barbers`。** 登入成功後讀 `profiles.role`，再導向：`shop` → `/shop`（他的後台），`admin` → `/admin/payouts`（撥款頁，M2.2 才建；在那之前導 `/shop` 或 `/barbers` 都行），其他（`customer`）→ `/barbers`。註冊信的 `emailRedirectTo` 也用同一套邏輯（或先導到一個會依角色再分流的落地頁）。**一律丟 `/barbers` 會讓 shop 一登入就掉進顧客瀏覽頁、admin 也看不到自己的撥款頁**——這是 M2.2 才踩到的坑，在這裡就修好。
+> 3. 角色判斷一律讀 **Supabase `profiles.role`**，不要在前端自己存一份角色狀態。**⚠️ 已知 M0 遺留問題：M0 產出的 app 很可能是讀 `user_metadata.role`（不是 `profiles.role`）——這是要先修的第一件事**，把角色判斷全部改成讀 `profiles.role`（M0 已建好的欄位）。`shop` 才能看到 `/shop/bookings`；`customer` 看到的是「開店」入口。
+> 4. **登入後要「依角色導向」，不要一律丟到同一頁。** 登入成功後讀 `profiles.role`，再導向**「這個 build 裡實際存在的」對應頁面**：`shop` → 店家後台（此 build 可能叫 `/shop`、`/shop/bookings` 或別的），`customer` → 顧客落地頁（可能叫 `/barbers`、`/app` 或別的），`admin` → 撥款頁（**⚠️ `/admin/payouts` 要到 M2.2 才建，M1.1 階段還不存在——admin 先導去店家後台或顧客頁即可，不要導去一個會 404 的路徑**）。**用這個 build 的真實 route 名稱，不要照抄字面上的 `/barbers`**（M0 的 app 有可能用 `/app` 之類的名字）。註冊信的 `emailRedirectTo` 也用同一套邏輯。重點是「依 `profiles.role` 分流」，路徑名稱以實際 app 為準。
 >
 > 注意：這一步**先不要**動任何資料表 schema（barbers/services 等我會用 migration 建）；你只要接 UI 與 `profiles.role` 的判斷。
 
-**Note for Claude Code:** the actual flip of `customer → shop` for an upgrading user should happen through Supabase, **gated by RLS** (a user updating their **own** `profiles.role` to `shop`). It must **never** allow `admin` — that allowlist stays `customer | shop | admin` and the sign-up/upgrade path only ever writes `customer | shop`; `admin` is promoted only by a one-off migration in the M2.1 prereq ([[supabase-best-practice]]). The "Become a shop" button is just the UI seam; the table that makes it real is `barbers`, built next. **Make the post-login redirect role-aware here (item 4).** A blanket redirect to `/barbers` looks fine in M1.1 (there's only the shop + customer split), but it silently strands the wrong roles later: a shop lands on the customer browse page instead of `/shop`, and in M2.2 the `admin` lands on `/barbers` with no way to reach `/admin/payouts`. Reading `profiles.role` once after auth and branching (`shop`→`/shop`, `admin`→`/admin/payouts`, else `/barbers`) fixes both at the source — cheaper than retrofitting it in M2.2.
+**Note for Claude Code:** the actual flip of `customer → shop` for an upgrading user should happen through Supabase, **gated by RLS** (a user updating their **own** `profiles.role` to `shop`). It must **never** allow `admin` — that allowlist stays `customer | shop | admin` and the sign-up/upgrade path only ever writes `customer | shop`; `admin` is promoted only by a one-off migration in the M2.1 prereq ([[supabase-best-practice]]). The "Become a shop" button is just the UI seam; the table that makes it real is `barbers`, built next. **Two known M0 carryovers to fix FIRST, before building anything (don't discover them mid-build):**
+- **M0 likely reads `user_metadata.role`, not `profiles.role`.** M0 captured the role into auth metadata; the M0 app may still branch on `user_metadata.role`. M1.1 (and [[supabase-best-practice]]) require reading **`profiles.role`** — switch every role check to read the `profiles` row. If it's still on `user_metadata`, that's the first edit.
+- **M0's post-login route may not be `/barbers`.** The M0 app may route to `/app` (or another name). **Make the redirect route-NAME-agnostic:** read `profiles.role` once and branch to *whatever this build's* customer-landing / shop-dashboard / admin page actually is — don't hardcode literal `/barbers` or `/admin/payouts`. Critically, **`/admin/payouts` doesn't exist until M2.2**, so an `admin` redirect to it will **404** during M1.1 — send `admin` to the shop dashboard (or the customer page) for now, and wire the real admin target when M2.2 builds it. The load-bearing rule is "**branch by `profiles.role`**", not the specific path strings.
+
+A blanket redirect to one page strands the wrong roles: a shop lands on the customer page instead of its dashboard, and later an `admin` can't reach settlement. Reading `profiles.role` once after auth and branching to the app's real routes fixes it at the source — cheaper than retrofitting in M2.2.
 
 ---
 
@@ -306,13 +319,15 @@ create policy "barber_photos_write_own" on storage.objects
 
 ### Step 3b — Regenerate the Supabase TypeScript types
 
-The UI work in Steps 5–6 is now **code-first** (no Lovable), so the new tables must be typed or the build won't type-check cleanly against them. After the schema + RLS + Storage migrations land, regenerate the generated types and overwrite the file:
+The UI work in Steps 5–6 is now **code-first** (no Lovable), so the new tables must be typed or the build won't type-check cleanly against them. After the schema + RLS + Storage migrations land, regenerate the types and **write them to disk yourself**:
 
 ```text
-generate_typescript_types   →  overwrite src/integrations/supabase/types.ts
+generate_typescript_types   →  CAPTURE the tool's output → OVERWRITE src/integrations/supabase/types.ts
 ```
 
-Then run the build (`npm run build` / `vite build`) to confirm the new tables (`platform_settings`, `barbers`, `services`, `bookable_slots`, `barber_photos`) are typed and nothing is broken.
+> ⚠️ **`generate_typescript_types` returns the types to YOU (the agent); it does NOT write the file.** The tool's result is the TypeScript source — you must take that output and **write/overwrite `src/integrations/supabase/types.ts`** in the app repo yourself (then commit it). "Regenerate the types" is a two-step action: call the tool, *then* write the file. If you skip the write, the repo's `types.ts` stays stale.
+
+> ⚠️ **You CANNOT run a local build in the Cowork sandbox.** `npm ci` / `npm install` / even a single `npm i <pkg>` get **killed** (~40s process ceiling, no background jobs, no global `tsc`/`esbuild`/`bun`/`pnpm`). So do **not** try `npm run build` / `vite build` here to "confirm it's clean." Instead verify by: **(a)** static review (imports resolve, the new table/column names match the migration, braces balance), **(b)** confirming `types.ts` was regenerated + written, and **(c)** the **Vercel build log** once it deploys (via the Vercel MCP — with the §4 caveat that the MCP may not see the project). **`vite build` only type-STRIPS — it does NOT type-check**, so even a green Vercel build is *not* proof of type correctness; a real type check needs `tsc --noEmit`, which also isn't runnable in-sandbox. Treat "Vercel built green" as "it compiled + bundled", not "the types are right."
 
 > **Note for Claude Code:** run this **after** every schema migration in this course, not just here — stale `types.ts` is a common cause of red type errors on otherwise-correct code. The file is generated; never hand-edit it, just regenerate and overwrite.
 
@@ -412,10 +427,12 @@ Then push to GitHub (recall the token from Secrets Manager — don't re-paste) a
 
 ## Cowork push-loop notes (mechanics — read if scripting the deploy)
 
-Two things bite when committing from Cowork; neither is conceptual, both cost time if rediscovered:
+These bite when committing from Cowork; none is conceptual, all cost time if rediscovered:
 
 1. **Prettier-as-ESLint-errors:** the repo enforces `prettier/prettier` as ESLint **errors**, and some M0-committed files were already prettier-dirty, so a blanket `eslint .` fails out of the box. `npm run format` fixes it but reformats **unrelated** files (including the course skill markdown). **Scope formatting to the files you changed** — don't run a repo-wide format and sweep in noise.
-2. **Cowork outputs mount denies `git` unlink:** the Cowork outputs mount is an overlay FS that **denies the unlink `git` does on tracked files**, so committing directly there is unreliable. **Workaround:** do the git work in a plain `/tmp` clone — copy your changed files over, then `commit` + `push` from the `/tmp` clone.
+2. **Clone into `$HOME` (`/sessions/<id>/…`), NOT `/tmp`.** The Cowork outputs mount is an overlay FS that **denies the unlink `git` does on tracked files**, so committing directly there is unreliable — clone elsewhere and do the git work there. But **`/tmp` is not reliable either**: `/tmp` clones came back **owned by `nobody:nogroup` and not writable** by the session user, and one `/tmp` clone was **corrupt/stale** (empty `git log`, phantom files not matching `HEAD`). A **`$HOME` clone (`/sessions/<id>/...`) was reliable** — use it.
+3. **Verify `HEAD` immediately after cloning** — `git log -1` right after `git clone` to confirm you're on the true tip. The app `main` can move **mid-session** (a UI reskin landed while work was in progress); `main` is the source of truth ([[supabase-best-practice]] source-of-truth rule), so a stale local clone will silently diverge if you don't re-check.
+4. **Expect committed `node_modules/` and `dist/`.** The app repo commits both, so a clone is **large** — clone **shallow** (`--depth 1`) and **never `ls -R` / `cat` `node_modules` or `dist`**, or you blow the output-token limit. Read only the source files you need.
 
 ## Expected duration
 
