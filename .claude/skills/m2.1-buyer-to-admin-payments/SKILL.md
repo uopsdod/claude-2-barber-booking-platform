@@ -83,7 +83,7 @@ Everything else — the `commission_rates` migration, both API routes, the dialo
 6. Build `POST /api/stripe/webhook` (raw-body verify, idempotent, flip pending_payment → paid + stamp paid_at)
 7. Keep the `vercel.json` SPA rewrite from swallowing `/api/*` (Next.js: middleware exemption)
 8. Add the `/bookings/success` poll page + confirm the webhook endpoint & `STRIPE_WEBHOOK_SECRET` (created in the prereq) + redeploy
-9. End-to-end test with `4242 4242 4242 4242` → run the checklist
+9. End-to-end test with `4242 4242 4242 4242`, then **hand off to the checklist** (tell the student to run it — don't run it yourself)
 
 ---
 
@@ -344,7 +344,7 @@ The webhook endpoint (`https://<your>.vercel.app/api/stripe/webhook`, event `che
 
 ---
 
-### Step 9 — End-to-end test with a test card, then run the checklist
+### Step 9 — End-to-end test with a test card, then hand off to the checklist
 
 > 在 live Vercel 網站上：以 customer 身分挑一位理髮師 → 開預約彈窗 → 選日期/時段 → 確認 → 跳到 Stripe Checkout → 用測試卡 **`4242 4242 4242 4242`**、任意未來到期日、任意 CVC 付款 → 回到 `/bookings/success`，看到狀態變 `paid`。
 
@@ -353,7 +353,11 @@ Then verify the booking in Supabase and confirm the charged amount:
 - **Verify the charged amount via the PaymentIntent/Charge, not Checkout Sessions.** Read the payment back through the Stripe MCP (`fetch_stripe_resources(pi_…)` from the stored `stripe_payment_intent_id`, or a PaymentIntent/Charge read) and confirm `amount = price × 100` for TWD (e.g. `30000` = NT$300.00), `status: succeeded`. (On the restricted Cowork key the Checkout Sessions resource is read-denied, but PaymentIntents/Charges reads work — key off the PI, don't list sessions.)
 - **Idempotency** is enforced by the `.eq('status','pending_payment')` status guard (backed by the `stripe_payment_intent_id` UNIQUE index) — a re-delivered event matches zero rows and no-ops. (No manual "resend the event" step is needed; the guard is the source of truth.)
 
-> 「跑 `m2.1-buyer-to-admin-payments-checklist` 驗收。」
+Tell the student it's built and end-to-end tested, then **hand off — do NOT run the checklist yourself.** Say:
+
+> 「M2.1 的金流建好、也用測試卡跑通了 ✅。要驗收的話，跟我說『跑 `m2.1-buyer-to-admin-payments-checklist` 驗收』，我再幫你跑。」
+
+> **Note for Claude Code:** **stop here and wait for the student's prompt** — the checklist is a separate skill the student triggers on their own (e.g. "跑 checklist 驗收" / "check M2.1"). Do **not** load or run `m2.1-buyer-to-admin-payments-checklist` on your own initiative just because the build finished; only invoke it when the student explicitly asks.
 
 > **Note for Claude Code:** test cards work **only in test/sandbox mode** — never a real card in sandbox, never a test card in live ([[stripe-best-practice]] Rule 7). Live cards + go-live are [[stripe-go-live]].
 
