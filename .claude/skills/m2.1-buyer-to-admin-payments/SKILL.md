@@ -35,13 +35,19 @@ Trigger phrases:
 
 | Part | CLI mode tool | Cowork mode equivalent |
 |---|---|---|
-| Edit + push the two API routes + dialog | `git` + your editor | git tool, recall GitHub PAT from Secrets Manager (`barber-project/github`) |
-| Stripe sandbox keys / confirm `livemode:false` | Stripe CLI (`stripe ...`) | Stripe MCP (`mcp__claude_ai_Stripe__*`) |
-| Apply the `commission_rates` migration | `supabase` CLI | Supabase MCP `mcp__claude_ai_Supabase__apply_migration` |
+| Edit + push the two API routes + dialog | `git` + your editor | git tool, recall the GitHub PAT from AWS Secrets Manager (see the discovery note below — **don't hardcode a secret name**, list secrets and find the PAT) |
+| Stripe sandbox keys / confirm `livemode:false` | Stripe CLI (`stripe ...`) | the Stripe MCP (resolve the concrete read tool from the connector — e.g. `stripe_api_read` / `get_stripe_account_info`; don't hardcode a `mcp__claude_ai_Stripe__…` literal) |
+| Apply the `commission_rates` migration | `supabase` CLI | the Supabase MCP's apply-migration capability (generic `apply_migration` — resolve from the connector, not a `mcp__claude_ai_Supabase__…` literal) |
 | Set `STRIPE_*` env vars + create the webhook endpoint | Stripe/Vercel dashboards | **done in the prereq** (up front) — Stripe MCP does NOT manage webhook endpoints; Vercel MCP does NOT manage env vars. The build only *confirms* them + redeploys (Step 8) |
 | Local webhook testing | `stripe listen --forward-to localhost:3000/api/stripe/webhook` | — (Cowork students test against the deployed Vercel URL) |
 
 The genuinely-manual steps — **creating the webhook endpoint in the Stripe dashboard** and **adding the two env vars in the Vercel dashboard** — have no MCP in 2026, so they're done **up front in the prereq** ([[m2.1-buyer-to-admin-payments-prerequisites]]); the build just confirms them and redeploys. Everything else the connectors do.
+
+> **GitHub PAT — discover it, don't hardcode a secret name.** To push, recall the GitHub Personal Access Token from **AWS Secrets Manager in `us-east-1`**. The secret's *name varies between student implementations* (`github/personal-access-token`, `barber-project/github`, etc.) — so **list the secrets and find the one holding the PAT** (`aws secretsmanager list-secrets --region us-east-1` / the `call_aws` list-secrets capability, then read the matching one) rather than assuming a fixed path. If exactly one secret obviously holds a GitHub token, use it; if ambiguous, ask the student which. ([[aws-secrets-best-practice]].)
+
+> **Resolve MCP tool names from the connector — this skill names capabilities, not literals.** The concrete tools surface under opaque server IDs with generic names (Supabase: `apply_migration`, `execute_sql`, `get_advisors`, `generate_typescript_types`; Stripe: `stripe_api_read`, `get_stripe_account_info`). Where this skill says "the Supabase MCP's apply-migration capability" or "read the PaymentIntent via the Stripe MCP", resolve the actual tool the connector exposes — don't type a `mcp__claude_ai_*__…` literal.
+
+> **Running SQL through the Supabase MCP:** `execute_sql` returns only the **last** statement's rows. Run **one statement per call**, or fold your checks into a **single `SELECT`** — never batch several statements and expect all their outputs.
 
 ## Architecture
 
@@ -67,7 +73,7 @@ You (Claude Code) **implement every step you can yourself, in order — do NOT w
 Everything else — the `commission_rates` migration, both API routes, the dialog rewire, the middleware exemption, the success page, and all verification — you do and check yourself. Report what you did and what you verified as you go.
 
 > **THIS COURSE IS A VITE + REACT SPA — that is the default track. Build the routes as Vercel serverless functions.** Lovable scaffolds a **client-only Vite SPA** on Vercel (no Next.js runtime, no `app/` router, no `middleware.ts`) — confirm with `vite.config.*` / an `index.html` entry / `"type": "module"` in `package.json`. The primary copy-paste code in Steps 4/6/7 is written for this. The Vite-SPA rules ([[stripe-best-practice]] Rule 2's Vite variant is canonical):
-> - **Server routes = Vercel serverless functions** in a top-level `/api` dir: `export default function handler(req: VercelRequest, res: VercelResponse)` (files `api/bookings/checkout.ts`, `api/stripe/webhook.ts`). Add the `stripe` + `@vercel/node` deps.
+> - **Server routes = Vercel serverless functions** in a top-level `/api` dir: `export default function handler(req: VercelRequest, res: VercelResponse)` (files `api/bookings/checkout.ts`, `api/stripe/webhook.ts`). Add the `stripe` + `@vercel/node` deps — **adding them to `package.json` is sufficient; Vercel runs `npm install` on build.** In this sandbox a local `npm install` may be killed (so you can't refresh the lockfile locally) — that's fine, let the Vercel build resolve them. **Check the npm registry for the current major rather than hardcoding a version** (`stripe` is on 22.x as of 2026 — a `^18` guess is stale); a pinned-but-stale major can fail to resolve.
 > - **Webhook raw body:** a Vercel Node function auto-parses the body, so set `export const config = { api: { bodyParser: false } }` **and** buffer the raw stream yourself (`for await (const chunk of req) …`). There is no App Router `await req.text()` here.
 > - **Step 7's webhook exemption is the `vercel.json` SPA rewrite** (there's no middleware): the catch-all that serves `index.html` will otherwise swallow `/api/*`. Exclude it: `"rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }]`.
 > - **ESM import gotcha (runtime-only — green `vite build`, 500 in prod):** `"type": "module"` + Vercel transpiling each `/api/*.ts` separately means a relative import needs the **`.js` extension** — `import { x } from '../_supabaseAdmin.js'` — or the function 500s with `ERR_MODULE_NOT_FOUND`.
@@ -95,11 +101,13 @@ Before writing any code, confirm `m2.1-buyer-to-admin-payments-prerequisites` ra
 
 If either is missing, stop and run the prereq. The admin account isn't used *in* M2.1, but promoting it now (while we're in the payment milestone) is the locked-in course design — M2.2's payout page needs it.
 
+> **Also confirm the prereq did its B5 redirect fix.** Promoting the admin *activates* the M1.1 post-login redirect's `admin` branch, which was written to send `admin` → `/admin/payouts` — a page that doesn't exist until M2.2. The prereq's Part B (B5) repoints that to `/barbers` (with a `TODO(M2.2)`) so the new admin isn't dropped on a 404. If the admin logs in and 404s, that fix was skipped — apply it (see [[m2.1-buyer-to-admin-payments-prerequisites]] B5) before continuing. M2.2 restores the `/admin/payouts` target when it builds the page.
+
 ---
 
 ### Step 2 — Create the `commission_rates` table (migration)
 
-There is **NO `transactions` table** — "money in" is simply a `paid` booking's `price`. M2.1 adds exactly **one** table (**`commission_rates`**, the versioned 20% ratio) plus **one column** on `bookings` (`stripe_payment_intent_id`, UNIQUE — the reconciliation pointer + idempotency backstop the webhook stamps). The split is **NOT** stored per booking and **NOT** computed by the webhook — it's derived at payout-build time (M2.2) by summing the admin's picked `paid` bookings × the rate in `commission_rates` (a versioned constant), and snapshotted onto the `payouts` batch row. `bookings` already has its `paid_at` column from M1.2's schema. (`platform_settings` is created back in M1.1 — M2.1 only *reads* it for the currency math, it does not create it here.) Apply as a **migration** (never a raw console edit — [[supabase-best-practice]]) via `mcp__claude_ai_Supabase__apply_migration`:
+There is **NO `transactions` table** — "money in" is simply a `paid` booking's `price`. M2.1 adds exactly **one** table (**`commission_rates`**, the versioned 20% ratio) plus **one column** on `bookings` (`stripe_payment_intent_id`, UNIQUE — the reconciliation pointer + idempotency backstop the webhook stamps). The split is **NOT** stored per booking and **NOT** computed by the webhook — it's derived at payout-build time (M2.2) by summing the admin's picked `paid` bookings × the rate in `commission_rates` (a versioned constant), and snapshotted onto the `payouts` batch row. `bookings` already has its `paid_at` column from M1.2's schema. (`platform_settings` is created back in M1.1 — M2.1 only *reads* it for the currency math, it does not create it here.) Apply as a **migration** (never a raw console edit — [[supabase-best-practice]]) via the Supabase MCP's apply-migration capability (generic `apply_migration` — resolve it from the connector):
 
 ```sql
 -- M2.1: the versioned commission ratio. "The rate for a booking" = the row with the greatest
@@ -124,12 +132,13 @@ create policy "commission_rates_write_admin"  on public.commission_rates for all
 -- bookings.stripe_payment_intent_id: the webhook stamps session.payment_intent on the paid flip.
 -- It is (a) a hard idempotency backstop — the UNIQUE index rejects a concurrent double-fire that
 -- slips past the status guard — and (b) a refund/reconciliation pointer back to the Stripe payment
--- (read it back via the Stripe MCP fetch_stripe_resources(pi_…) — no read-proxy Lambda needed).
+-- (read it back via the Stripe MCP's PaymentIntent read — no read-proxy Lambda needed; see Step 9
+--  for the exact call, since the restricted key may require LISTing PaymentIntents and matching by id).
 alter table public.bookings add column if not exists stripe_payment_intent_id text;
 create unique index if not exists uniq_bookings_pi on public.bookings(stripe_payment_intent_id);
 ```
 
-> **Note for Claude Code:** there is **deliberately no per-booking ledger** — `bookings` carries no `platform_fee`/`barber_amount`, and there is **no `transactions` table** to insert into. The webhook (Step 6) only flips `bookings.status` to `paid`, stamps `paid_at`, and records `stripe_payment_intent_id`; "money in" = the `paid` booking's `price` snapshot (M1.2). The `stripe_payment_intent_id` is not money data — it's a pointer to the Stripe payment for **reconciliation** (verify the charged amount via the Stripe MCP's PaymentIntent/Charge reads keyed off it) and a **hard idempotency backstop** (the UNIQUE index). M2.2 computes `platform_cut` / `shop_cut` at payout-build time by summing the admin's picked `paid` bookings × `commission_rates`, and snapshots the rate onto the `payouts` batch so a later rate change never alters a settled batch. **After applying: run `get_advisors`, then regenerate `src/integrations/supabase/types.ts` (`generate_typescript_types`)** so the new `commission_rates` type + the `bookings.stripe_payment_intent_id` column exist before you write the routes ([[supabase-best-practice]] Rules 2 + 6).
+> **Note for Claude Code:** there is **deliberately no per-booking ledger** — `bookings` carries no `platform_fee`/`barber_amount`, and there is **no `transactions` table** to insert into. The webhook (Step 6) only flips `bookings.status` to `paid`, stamps `paid_at`, and records `stripe_payment_intent_id`; "money in" = the `paid` booking's `price` snapshot (M1.2). The `stripe_payment_intent_id` is not money data — it's a pointer to the Stripe payment for **reconciliation** (verify the charged amount via the Stripe MCP's PaymentIntent/Charge reads keyed off it) and a **hard idempotency backstop** (the UNIQUE index). M2.2 computes `platform_cut` / `shop_cut` at payout-build time by summing the admin's picked `paid` bookings × `commission_rates`, and snapshots the rate onto the `payouts` batch so a later rate change never alters a settled batch. **After applying: run the Supabase MCP's advisors check, then regenerate `src/integrations/supabase/types.ts` via its generate-types capability** (the concrete tools are `get_advisors` / `generate_typescript_types` — resolve them from the connector) so the new `commission_rates` type + the `bookings.stripe_payment_intent_id` column exist before you write the routes ([[supabase-best-practice]] Rules 2 + 6).
 
 ---
 
@@ -147,13 +156,16 @@ create unique index if not exists uniq_bookings_pi on public.bookings(stripe_pay
 
 ### Step 4 — Build `POST /api/bookings/checkout` (dynamic, `unit_amount` scaled into Stripe's smallest unit — TWD is 2-decimal → ×100)
 
-The route takes a `pending_payment` booking the dialog created, reads its `price` snapshot server-side, and builds a **dynamic** Checkout Session. The Stripe `unit_amount` is the whole-unit `price` scaled into **Stripe's smallest unit for the currency**: **TWD is a 2-decimal currency in Stripe** (NOT on Stripe's zero-decimal list), so `unit_amount = price × 100` — a NT$300 cut → `30000` (= NT$300.00). Only Stripe's *true* zero-decimal currencies (`jpy`, `krw`, …) use `× 1`. **Do NOT drive the factor off `platform_settings.currency_minor_units`** — that column is a *display* concept (`0` = show whole TWD), a different thing from Stripe's per-currency exponent; scale off the zero-decimal set below. Have Claude Code write it, then push (recall the GitHub PAT from Secrets Manager — don't re-ask):
+The route takes a `pending_payment` booking the dialog created, reads its `price` snapshot server-side, and builds a **dynamic** Checkout Session. The Stripe `unit_amount` is the whole-unit `price` scaled into **Stripe's smallest unit for the currency**: **TWD is a 2-decimal currency in Stripe** (NOT on Stripe's zero-decimal list), so `unit_amount = price × 100` — a NT$300 cut → `30000` (= NT$300.00). Only Stripe's *true* zero-decimal currencies (`jpy`, `krw`, …) use `× 1`. **Do NOT drive the factor off `platform_settings.currency_minor_units`** — that column is a *display* concept (`0` = show whole TWD), a different thing from Stripe's per-currency exponent; scale off the zero-decimal set below. Have Claude Code write it, then push (recall the GitHub PAT via the discovery step above — list Secrets Manager secrets and find the PAT; don't re-ask):
 
 ```ts
 // api/bookings/checkout.ts  — Vercel serverless function (this course's Vite-SPA default)
 import Stripe from 'stripe'
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { supabaseAdmin } from './_supabaseAdmin.js'   // service-role client — NOTE the .js ESM extension
+// Shared service-role client lives at api/_supabaseAdmin.ts. This file is api/bookings/checkout.ts —
+// one level DEEPER than api/ — so the relative import is ../ (NOT ./). Same for api/stripe/webhook.ts.
+// NOTE the .js ESM extension (see the ESM import gotcha above) — a bare '../_supabaseAdmin' 500s at runtime.
+import { supabaseAdmin } from '../_supabaseAdmin.js'   // service-role client
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
 
@@ -205,7 +217,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       customer_id: booking.customer_id,
     },
     client_reference_id: booking.id,
-    success_url: `${origin}/bookings/success?session_id={CHECKOUT_SESSION_ID}`,
+    // Include booking_id in success_url — the success page polls THE BOOKING, and nothing on the
+    // booking maps a Stripe session_id back to a booking_id, so session_id alone gives the poll no key.
+    // (session_id is kept only for display/debugging.) The poll stays RLS-gated to the owner.
+    success_url: `${origin}/bookings/success?booking_id=${booking.id}&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${origin}/barbers/${barberId}`,
   })
 
@@ -332,7 +347,9 @@ The `(?!api/)` negative-lookahead means every path EXCEPT `/api/*` rewrites to t
 ### Step 8 — `/bookings/success` poll page + confirm the webhook endpoint/secret (set in the prereq) + redeploy
 
 **8.1 — The success page (UX only):**
-> 「做一個 `/bookings/success` 頁面：讀 `session_id`，每 1–2 秒去查這筆 booking 的 `status`，顯示『付款處理中…』直到變成 `paid`，再顯示『預約成功！』。這頁**只查不改**——webhook 才是真相來源。使用者付完款後可能直接關掉瀏覽器，所以絕對不能靠這頁來確認預約。」
+> 「做一個 `/bookings/success` 頁面：從 query string 讀 **`booking_id`**（Step 4 的 `success_url` 已經帶上了），每 1–2 秒去查這筆 booking 的 `status`，顯示『付款處理中…』直到變成 `paid`，再顯示『預約成功！』。這頁**只查不改**——webhook 才是真相來源。使用者付完款後可能直接關掉瀏覽器，所以絕對不能靠這頁來確認預約。」
+
+> **Note for Claude Code:** poll on **`booking_id`**, not `session_id`. Nothing on the booking maps a Stripe `session_id` back to a `booking_id`, so a page given only `session_id` has no key to query — that's why Step 4's `success_url` carries `booking_id` (the poll stays RLS-gated to the owning customer). `session_id` is along only for display/debugging.
 
 **8.2 — Confirm the webhook endpoint + `STRIPE_WEBHOOK_SECRET` (created in the prereq), then redeploy:**
 
@@ -350,7 +367,7 @@ The webhook endpoint (`https://<your>.vercel.app/api/stripe/webhook`, event `che
 
 Then verify the booking in Supabase and confirm the charged amount:
 - `select status, paid_at, price, payout_id, stripe_payment_intent_id from bookings where id = '<id>';` — `status='paid'` + `paid_at` set, `price` unchanged (e.g. `300`), `stripe_payment_intent_id` populated (`pi_…`), `payout_id` still **NULL** (it's now an OWED booking — M2.2 stamps `payout_id` when the admin builds a payout). There is **no `transactions` table** to query and **no fee columns** on the booking — "money in" is just this `paid` booking's `price`; the split is M2.2's job.
-- **Verify the charged amount via the PaymentIntent/Charge, not Checkout Sessions.** Read the payment back through the Stripe MCP (`fetch_stripe_resources(pi_…)` from the stored `stripe_payment_intent_id`, or a PaymentIntent/Charge read) and confirm `amount = price × 100` for TWD (e.g. `30000` = NT$300.00), `status: succeeded`. (On the restricted Cowork key the Checkout Sessions resource is read-denied, but PaymentIntents/Charges reads work — key off the PI, don't list sessions.)
+- **Verify the charged amount via the PaymentIntent/Charge, not Checkout Sessions.** The *check* is: confirm `amount = price × 100` for TWD (e.g. `30000` = NT$300.00), `currency: twd`, `status: succeeded`, `livemode: false`. Read the payment back through the Stripe MCP's read capability (concrete tool is `stripe_api_read`) — **don't assume a specific fetch-by-id signature**; on the restricted Cowork key a direct "get PaymentIntent by id" call may error (e.g. `GetPaymentIntentsPaymentIntent` is not accepted), so the reliable path is to **LIST PaymentIntents** (operation `GetPaymentIntents`) and **match on the stored `stripe_payment_intent_id`**. (The Checkout Sessions resource is often read-denied on that key — key off the PI, don't list sessions.)
 - **Idempotency** is enforced by the `.eq('status','pending_payment')` status guard (backed by the `stripe_payment_intent_id` UNIQUE index) — a re-delivered event matches zero rows and no-ops. (No manual "resend the event" step is needed; the guard is the source of truth.)
 
 Tell the student it's built and end-to-end tested, then **hand off — do NOT run the checklist yourself.** Say:
