@@ -28,6 +28,14 @@ Three model facts the checks enforce throughout:
 
 In Cowork mode every Bash/`curl` block below is CLI-only — use the browser/MCP equivalent. Supabase MCP is preferred for the SQL checks in both modes. There is **no Stripe check in this milestone** (M2.2 moves no money). **Verifying a live URL in Cowork ([[supabase-best-practice]] Rule 7):** the sandbox `curl` is **proxy-blocked** — a `000/403` is **NOT** proof the site is down. Use the **URL-fetch MCP** (`web_fetch_vercel_url`) or a browser. The `/admin/payouts` gate check (only `role='admin'` reaches it) is a real per-path test — the fetch tool can't shareable-URL a subpath, so confirm the **route guard + RLS** structurally and do the decisive allow/deny test by **navigating in a browser** as admin vs customer.
 
+> **⚠️ CRITICAL — the Supabase MCP runs PRIVILEGED, so it CANNOT exercise the admin-guarded RPCs or the RLS denials directly. Read this before running Sections C, D, E.** The Supabase MCP `execute_sql` connects as a **privileged role with `auth.uid()` = NULL** and it **bypasses RLS**. Two consequences that change how you verify:
+> - **Admin-guarded RPCs raise on the MCP.** `select public.build_payout(array[...])` / `cancel_payout(...)` / `mark_payout_transferred(...)` all hit `if not public.is_admin() then raise 'admin only'` at line 1 (because `auth.uid()` is NULL → not admin). So through the MCP you **cannot** exercise the happy path *or* reach the same-shop / no-double-pay / immutability guards — every call dies with `admin only` before the logic runs. This is **not** a bug in the build; it's the privileged session.
+> - **RLS denials can't be shown on the MCP.** "As a customer, expect 0 rows" (C3/E1) can't be demonstrated — the privileged session sees **every** row regardless of policy.
+>
+> **So split every behavioral test into two evidence types:**
+> 1. **Behavioral (the real proof) → do it in the BROWSER / live app**, logged in as the actual admin (and as a customer for the deny tests). The admin building a real payout and marking it transferred on the live page *is* the D1/D4 pass; a customer being redirected off `/admin/payouts` *is* the C2 pass. This is the **primary** path for C2, C3, D1, D2, D3, D4, D5, D6, E1.
+> 2. **Structural (the MCP-side evidence)** — where you can't drive the browser, confirm the guards *exist in the source* instead of executing them: read the function bodies with **`select pg_get_functiondef(oid) from pg_proc where proname in ('build_payout','cancel_payout','mark_payout_transferred','is_admin')`** and eyeball the guards (`if not public.is_admin()`, `count(distinct ... shop_id) <> 1`, `where ... payout_id is null`, `where ... status='pending_transfer'`), and confirm the **policies exist** with **`select policyname, cmd, qual from pg_policies where tablename in ('payouts','bookings')`**. Structural checks prove the guard is *written*; the browser proves it *fires*. A section passes on the browser evidence — the `pg_get_functiondef`/`pg_policies` reads are the fallback when a live login isn't available, not a substitute for it.
+
 ## How to run
 
 The student invokes this directly (e.g. types `驗收 M2.2`). You (Claude Code) **actively run** each check and report results — don't just describe them.
@@ -41,21 +49,23 @@ Ask the student for:
 
 If there is **no admin user**, stop — send the student back to the M2.1 prerequisite to promote one (there is no admin sign-up). Then re-run.
 
+> **Confirm the M2.2 deploy actually shipped (Vercel MCP — 2026):** if the **Vercel MCP is connected, it *does* see the project** — `list_deployments` / `get_deployment` by project + team id and check the latest is `state: READY` (a fresh push is usually `READY` in ~30–40s) before you trust the live pages. The old "the Vercel connector shows no projects, so the build can't be verified" note is **stale** — don't repeat it. (The sandbox `curl` against the live URL is still proxy-blocked; use the Vercel MCP or the URL-fetch MCP.)
+
 ### Step 2: Run the checklist
 
 #### Section A — Real-time owed-pool VIEW math (price × rate split + rounding)
 - **A1** The `owed_bookings` VIEW exists and returns the live owed pool — one row per **`paid` booking with `payout_id IS NULL`**, attributed to a shop via `bookings → services → barbers(shop_id)` — through `service_id`, **NOT** through the slot, and **NOT** via a non-existent `bookings.barber_id`:
   ```sql
   -- via Supabase MCP execute_sql
-  select booking_id, shop_id, customer_id, price, platform_pct, platform_cut, shop_cut
+  select booking_id, shop_id, shop_name, barber_name, customer_id, price, platform_pct, platform_cut, shop_cut
   from public.owed_bookings
   order by paid_at desc;
   ```
-  Confirm the view definition attributes via the service (not the slot, not a non-existent `bookings.barber_id`) and filters the owed pool:
+  The VIEW should expose **`shop_name`** and **`barber_name`** directly (resolved inside the view), so the builder needs no second `profiles` fetch and no unreliable PostgREST embed on the view. Confirm the view definition attributes via the service (not the slot, not a non-existent `bookings.barber_id`) and filters the owed pool:
   ```sql
   select pg_get_viewdef('public.owed_bookings'::regclass, true);
   ```
-  Expect `join public.services ... on ... = b.service_id` then `join public.barbers ... on ... = s.barber_id`, a `where b.status = 'paid' and b.payout_id is null`, and a lateral select from `commission_rates` for the rate. *Recovery:* if the view references `bookings.barber_id`, a `transactions` table, joins through `bookable_slots`, or filters on a `payout_pending`/`payout_transferred` booking status, it's on the old model — rewrite it to list `paid` bookings WHERE `payout_id IS NULL`, joined `bookings → services → barbers`, with the derived split (M2.2 Step 1).
+  Expect `join public.services ... on ... = b.service_id` then `join public.barbers ... on ... = s.barber_id` (and a `join public.profiles ... on ... = bar.shop_id` for `shop_name`), a `where b.status = 'paid' and b.payout_id is null`, and a lateral select from `commission_rates` for the rate. *Recovery:* if the view references `bookings.barber_id`, a `transactions` table, joins through `bookable_slots`, or filters on a `payout_pending`/`payout_transferred` booking status, it's on the old model — rewrite it to list `paid` bookings WHERE `payout_id IS NULL`, joined `bookings → services → barbers`, with the derived split (M2.2 Step 1).
 - **A2** **The split is correct and sums back to price, per row** — `platform_cut + shop_cut = price`, with no lost unit (rounding closes exactly because `shop_cut = price - platform_cut`), and `platform_cut = round(price * platform_pct)`:
   ```sql
   select booking_id, price, platform_pct, platform_cut, shop_cut,
@@ -89,22 +99,25 @@ If there is **no admin user**, stop — send the student back to the M2.1 prereq
   Compare these to the builder's running total when all of that shop's owed rows are checked — they must match exactly, and `total_gross = total_platform + total_shop_cut`. *Recovery:* compute the builder total by summing the **checked rows**, not a separate divergent query (M2.2 Step 2).
 
 #### Section C — Admin gate (the decisive test)
-- **C1** **As the admin:** `/admin/payouts` loads and shows the live owed list (one row per owed paid booking, attributable per shop) + the existing-payouts ledger, plus the 「建立撥款 / Build payout」 action.
+- **C1** **As the admin:** logging in **lands you on `/admin/payouts`** (the restored post-login redirect — not `/barbers`) **and** the admin **Payouts nav link** is visible; the page shows the live owed list (one row per owed paid booking, attributable per shop) + the existing-payouts ledger, plus the 「建立撥款 / Build payout」 action. *Recovery:* if the admin lands on `/barbers`, the M2.1-era login redirect stub (`admin → /barbers`) wasn't restored to `admin → /admin/payouts` — fix `redirectByRole` (e.g. `src/pages/Login.tsx`) and/or add the admin nav link (M2.2 Step 2, entry-point).
 - **C2** **The decisive test — as a non-admin** (logged-in customer or shop): hitting `/admin/payouts` is **denied** (redirect to `/login` / 403, NOT the payout page):
   ```bash
   # signed-out / non-admin should NOT get the payout page
   curl -sS -o /dev/null -w "%{http_code}\n" https://<app>.vercel.app/admin/payouts
   ```
-  A signed-out request must not return the page; for a logged-in non-admin, confirm in the browser they are redirected/403'd. *Recovery:* add the middleware `/admin/*` gate AND rely on RLS (`payouts` + bank fields are admin-or-shop only; the admin actions are admin-guarded RPCs) — M2.2 Step 2.
+  A signed-out request must not return the page; for a logged-in non-admin, confirm in the browser they are redirected/403'd. **This is a BROWSER test — the Supabase MCP can't stand in for it** (it's privileged, so it can't be "a non-admin"). *Recovery:* add the route guard (`/admin/*` middleware, or the `RequireAdmin` component in the Vite SPA) AND rely on RLS (`payouts` + bank fields are admin-or-shop only; the admin actions are admin-guarded RPCs) — M2.2 Step 2.
 - **C3** **RLS-level proof:** a non-admin session cannot read other shops' `payouts` at all:
   ```sql
   -- run as a non-admin (anon/customer) session, NOT service-role
   select count(*) from public.payouts;
   ```
-  Expect `0` rows (a customer owns none; a shop sees only its own) — even if rows exist. The admin/service-role sees the real count.
+  Expect `0` rows (a customer owns none; a shop sees only its own) — even if rows exist. **⚠️ You CANNOT run this through the Supabase MCP** — the MCP bypasses RLS and would see every row, falsely failing the check. Run it from a real **non-admin browser session** (the app's Supabase client with a customer logged in), or fall back to the **structural** proof: `select policyname, cmd, qual from pg_policies where tablename='payouts'` shows the `payouts_select_admin_or_owner` policy (`is_admin() OR shop_id = auth.uid()`) exists. The admin/service-role sees the real count.
 
 #### Section D — Build / mark-transferred / cancel state machine
-- **D1** **BUILD A PAYOUT stamps `bookings.payout_id` + creates a `pending_transfer` snapshot for ONE shop.** As the admin, select a shop's owed bookings → 「建立撥款 / Build payout」 (or call `build_payout(array[...])`), then confirm:
+
+> **⚠️ Drive every `build_payout` / `mark_payout_transferred` / `cancel_payout` call from the LIVE APP as the logged-in admin — NOT from the Supabase MCP.** On the MCP `auth.uid()` is NULL, so every one of these RPCs raises `admin only` at line 1 and you never reach the happy path or the guards below. The **`select ... from payouts / bookings / owed_bookings`** read-back queries (which just inspect state) are fine on the MCP; only the **RPC-invoking** lines (`select public.build_payout(...)`, etc.) must be run through the app. If you can't drive the browser, verify the guards **structurally** with `pg_get_functiondef` instead (see the CRITICAL note in Execution mode) and record the item as structurally-confirmed. The real behavioral pass came from the user's own live build+mark-transferred on a real shop.
+
+- **D1** **BUILD A PAYOUT stamps `bookings.payout_id` + creates a `pending_transfer` snapshot for ONE shop.** As the admin **in the live app**, select a shop's owed bookings → 「建立撥款 / Build payout」 (calling `build_payout(array[...])` directly only works from an admin session, not the MCP), then confirm with the read-back below:
   ```sql
   select id, shop_id, shop_name, status, gross, platform_pct, platform_cut, shop_cut,
          bookings_count, created_by
@@ -179,7 +192,7 @@ If there is **no admin user**, stop — send the student back to the M2.1 prereq
   -- run as a non-shop non-admin session
   select id, bank_account_name, bank_account_number from public.profiles;
   ```
-  Expect only the caller's own row (their own bank fields) — never another shop's `bank_account_*`. The admin sees all (via `profiles_select_admin`). Also confirm `barbers` has **no** bank columns:
+  Expect only the caller's own row (their own bank fields) — never another shop's `bank_account_*`. **⚠️ Run this from a real non-admin browser session, NOT the Supabase MCP** — the MCP bypasses RLS and sees every row, so it can't demonstrate the denial; its result here proves nothing. Structural fallback: `select policyname, qual from pg_policies where tablename='profiles'` shows the shop+admin-only select policy. The admin sees all (via `profiles_select_admin`). Also confirm `barbers` has **no** bank columns (this schema read *is* fine on the MCP):
   ```sql
   select column_name from information_schema.columns
   where table_schema='public' and table_name='barbers';
@@ -199,6 +212,13 @@ If there is **no admin user**, stop — send the student back to the M2.1 prereq
   where conrelid='public.bookings'::regclass and contype='c' and conname like '%status%';
   ```
   Expect a CHECK over `('pending_payment','paid','cancelled')` only. *Recovery:* drop any `transactions` table and any `platform_fee`/`barber_amount` columns; settlement is derived from `payout_id`, not a `payout_*` booking status (M2.2 Step 1).
+- **E3** **`bookings.payout_id` has its foreign key to `payouts`.** M1.2 created `payout_id` as a bare `uuid` (no FK — `payouts` didn't exist yet); M2.2 adds `bookings_payout_id_fkey`. Confirm it landed:
+  ```sql
+  select conname, confrelid::regclass as references_table, confdeltype
+  from pg_constraint
+  where conrelid = 'public.bookings'::regclass and contype = 'f' and conname = 'bookings_payout_id_fkey';
+  ```
+  Expect **one row** — `references_table = payouts`, `confdeltype = 'n'` (`on delete set null`). Zero rows means the FK is missing (the settlement link has no referential integrity — a dangling `payout_id`, no auto-null on payout delete). *Recovery:* add it (guarded, idempotent): `alter table public.bookings add constraint bookings_payout_id_fkey foreign key (payout_id) references public.payouts(id) on delete set null;` — M2.2 Step 1.
 
 ## Reporting
 
@@ -210,7 +230,7 @@ Emit a table:
 | A2 split sums back to price (gap=0), platform_cut = round(price×rate) | ✅ / ⚠️ / ❌ | shop_cut = price − platform_cut |
 | A3 view is `security_invoker` + `bookings` has admin SELECT; no advisor ERROR | ✅ / ❌ | else silent: empty admin builder / cross-shop leak |
 | B1 builder running total reconciles with checked rows | ✅ / ❌ | total = sum of checked rows |
-| C1 admin reaches /admin/payouts (owed list + ledger + build) | ✅ / ❌ | shop attribution |
+| C1 admin login lands on /admin/payouts (redirect restored) + nav link; owed list + ledger + build | ✅ / ❌ | not stranded on /barbers |
 | C2 non-admin denied at /admin/payouts | ✅ / ❌ | **the decisive test** |
 | C3 non-admin cannot read others' payouts (RLS) | ✅ / ❌ | |
 | D1 build payout → pending_transfer snapshot (shop_name) + bookings.payout_id stamped | ✅ / ❌ | bookings stay 'paid' |
@@ -223,6 +243,7 @@ Emit a table:
 | D8 snapshot integrity — built batch unaffected by a rate change | ✅ / ❌ | frozen on payouts |
 | E1 bank fields (on profiles) not readable by others; barbers has none | ✅ / ❌ | |
 | E2 NO transactions table; NO fee cols; 3-state bookings + payout_id | ✅ / ❌ | old money model gone |
+| E3 `bookings.payout_id` FK → payouts exists (on delete set null) | ✅ / ❌ | M1.2 left it bare; M2.2 adds it |
 
 **Verdict:**
 - All ✅ → 「M2.2 驗收通過 ✅ — 抽成撥款制度正確：`owed_bookings` VIEW 列出每筆還沒撥款的 paid booking（`payout_id IS NULL`）並乘上費率（platform_cut + shop_cut 對得起 price）、按店家經 service→barber 歸戶；只有 admin 進得了撥款頁；『建立撥款』把選取的（同一間店家）booking 蓋上 `payout_id` 並開出 pending_transfer 的快照 payout、混店家的選取會被擋下、已撥款的 booking 無法被重複撥；『標記已轉帳』只翻 payout（booking 不動，撥款狀態是看 `payout_id` 推導）；轉帳前可『取消』、把 booking 的 `payout_id` 清空退回欠款池（booking 仍是 paid、payout 列保留為 cancelled）、已轉帳的 payout 不可取消；店家在 `/shop/earnings` 看得到欠款 vs 已納入撥款及狀態；payouts 有 shop_name 快照、沒有 transactions table、booking 也沒有抽成欄位且是 3 狀態、銀行欄位鎖好了。READY for M3。跟我說『啟動 M3』，我們用 AWS Route 53 把自訂網域接上 Vercel。」
