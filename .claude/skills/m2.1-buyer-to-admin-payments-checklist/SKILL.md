@@ -15,10 +15,14 @@ Verifies the student actually completed M2.1 — not just *thinks* they did. The
 
 | Section | CLI mode tool | Cowork mode equivalent |
 |---|---|---|
-| A — Checkout session shape + charged amount | Stripe CLI / browser | Stripe MCP PaymentIntent/Charge read (Checkout Sessions may be read-denied — read route source + verify amount off the PI) |
+| A — Checkout session shape + charged amount | Stripe CLI / browser | Stripe MCP read capability — LIST PaymentIntents + match by id (Checkout Sessions may be read-denied — read route source + verify amount off the PI) |
 | B — Webhook (raw-body verify, exemption) | `curl` + route source | `curl` for the exemption check + read the route source |
-| C — Booking flips to paid + commission_rates seeded | Supabase SQL | Supabase MCP (`execute_sql`) — preferred both modes |
-| D — Admin account | Supabase SQL | Supabase MCP (`execute_sql`) |
+| C — Booking flips to paid + commission_rates seeded | Supabase SQL | Supabase MCP execute-SQL capability — preferred both modes |
+| D — Admin account | Supabase SQL | Supabase MCP execute-SQL capability |
+
+**Resolve the concrete tool names from the connectors** — they surface under opaque server IDs with generic names (Supabase: `execute_sql`; Stripe: `stripe_api_read`). This skill names *capabilities*, not `mcp__claude_ai_*__…` literals — resolve the actual tool each connector exposes.
+
+**Running SQL through the Supabase MCP:** `execute_sql` returns only the **last** statement's rows. Run **one statement per call** (or fold into a single `SELECT`) — batching several statements silently drops the earlier ones' output. Every SQL block below is a single statement for this reason.
 
 In Cowork mode every Bash block is CLI-only — use the equivalent. Don't try to install `curl`/Stripe CLI in Cowork. **Verifying a live URL in Cowork ([[supabase-best-practice]] Rule 7):** the sandbox `curl` is **proxy-blocked** — a `000/403` is **NOT** evidence the site is down. Use the **URL-fetch MCP** (`web_fetch_vercel_url`) or a browser; treat its `200` as ground truth. (The B1 webhook-path POST is a real per-path check — do it via the URL-fetch MCP / a real request, not the sandbox `curl`, and read the JSON-vs-HTML body, not just the code.)
 
@@ -42,7 +46,7 @@ Ask the student for:
   stripe checkout sessions list --limit 1
   ```
   *(Cowork/restricted key: the Checkout Sessions resource is often read-denied — confirm this shape by **reading the route source** instead; the charged amount is verified off the PaymentIntent in A2.)*
-- **A2** **`unit_amount` uses Stripe's smallest unit for the currency (TWD → `price × 100`).** A NT$300 cut's charged `amount` must be **`30000`** (= NT$300.00), **NOT** `300`. **Verify via the Stripe MCP PaymentIntent/Charge `amount`** — key off the `stripe_payment_intent_id` the webhook stamped (`fetch_stripe_resources(pi_…)` or a PaymentIntent/Charge read), **not** by listing Checkout Sessions (that resource is read-denied on the restricted Cowork key; PaymentIntents/Charges reads work). Confirm `status: succeeded`. Do NOT drive the scale off `currency_minor_units` (that's display-only).
+- **A2** **`unit_amount` uses Stripe's smallest unit for the currency (TWD → `price × 100`).** A NT$300 cut's charged `amount` must be **`30000`** (= NT$300.00), **NOT** `300`. **Verify off the PaymentIntent `amount`** — the check is `amount = price × 100` for TWD, `currency: twd`, `status: succeeded`, `livemode: false` — keyed off the `stripe_payment_intent_id` the webhook stamped, **not** by listing Checkout Sessions (that resource is read-denied on the restricted Cowork key; PaymentIntent reads work). Use the Stripe MCP's read capability (concrete tool `stripe_api_read`); **don't assume a fetch-by-id signature** — a direct "get PaymentIntent by id" may error on the restricted key, so **LIST PaymentIntents** (operation `GetPaymentIntents`) and **match on the stored `stripe_payment_intent_id`**. Do NOT drive the scale off `currency_minor_units` (that's display-only).
   *Recovery if `× 1`:* it billed NT$3.00 (below Stripe's ~50¢ minimum → the Session is **rejected** and the customer never pays); fix to `price × 100` via Stripe's zero-decimal set (M2.1 Step 4 / [[stripe-best-practice]] Rule 0 — TWD is 2-decimal).
 
 #### Section B — Webhook: raw-body verify, webhook-path exemption
@@ -73,13 +77,15 @@ Ask the student for:
   Expect at least the seed row `effective_from = 2026-01-01`, `platform_pct = 0.2000`. "Money in" for M2.2 is summed directly from the admin's picked `paid` bookings' `price` × this rate — there is no per-booking ledger.
   *Recovery:* M2.1 Step 2 — apply the `commission_rates` migration (seed `2026-01-01 = 0.20`); do NOT add a `transactions` table or fee columns ([[supabase-best-practice]]).
 
-#### Section D — Admin account exists
+#### Section D — Admin account exists + isn't stranded on a 404
 - **D1** **An admin account exists** (promoted in the prereq via a one-off migration):
   ```sql
   select id, email, role from public.profiles where role = 'admin';
   ```
   Expect at least one row with `role = 'admin'`. M2.2's `/admin/payouts` gates on this.
-  *Recovery:* run `m2.1-buyer-to-admin-payments-prerequisites` Part B (find the account → promote with `apply_migration`). A user can never self-escalate, so this only appears via that migration.
+  *Recovery:* run `m2.1-buyer-to-admin-payments-prerequisites` Part B (find the account → promote with the apply-migration capability). A user can never self-escalate, so this only appears via that migration.
+- **D2** **The `admin` login redirect doesn't strand the admin on a 404.** Promoting the admin *activates* the M1.1 post-login redirect's `admin` branch, originally written to send `admin` → `/admin/payouts` — a page that doesn't exist until M2.2. The prereq's B5 repoints it to `/barbers` (with a `TODO(M2.2)`). Confirm in the source (the M1.1 login/auth component, commonly `src/pages/Login.tsx` — grep for the `admin` role branch): it must **not** navigate to `/admin/payouts`. Best check: log in as the admin and confirm they land on a real page (the marketplace), not a 404.
+  *Recovery:* apply `m2.1-buyer-to-admin-payments-prerequisites` B5 — point the `admin` branch at `/barbers` with a `TODO(M2.2)` to restore `/admin/payouts`, then push + redeploy. (M2.2 restores the real target when it builds the page.)
 
 ## Reporting
 
@@ -94,6 +100,7 @@ Emit a table:
 | C1 booking → paid on payment, payout_id NULL (no slot status to flip) | ✅ / ❌ | `status='paid'` + `paid_at` set + `payout_id` NULL (owed; 3-state status); slot held via paid booking + unique index |
 | C2 NO transactions row / NO fee columns; commission_rates seeded | ✅ / ❌ | `commission_rates` has `2026-01-01 = 0.2000`; no per-booking ledger |
 | D1 admin account exists (role='admin') | ✅ / ❌ | from the prereq's one-off migration |
+| D2 admin login redirect not stranded on 404 | ✅ / ❌ | `admin` branch points at `/barbers` (not `/admin/payouts`, which 404s until M2.2) — prereq B5 |
 
 **Verdict:**
 - All ✅ → 「M2.1 驗收通過 ✅ READY for M2.2。預約已經是『付款成功才鎖定』——webhook 把 booking 從 `pending_payment` 翻成 `paid`、蓋上 `paid_at`、`payout_id` 仍是 NULL（代表「欠撥」），沒有任何 ledger 或拆帳欄位（拆帳是 M2.2 由 admin 挑選欠撥的 `paid` 預約、組成撥款批次時用 `commission_rates` 算）。`commission_rates` 已 seed、admin 帳號也備好了。跟我說『啟動 M2.2』，我們來做 admin 撥款頁。」

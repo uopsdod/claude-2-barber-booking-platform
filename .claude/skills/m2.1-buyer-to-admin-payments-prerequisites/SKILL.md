@@ -1,6 +1,6 @@
 ---
 name: m2.1-buyer-to-admin-payments-prerequisites
-description: One-time setup before Milestone 2.1 of the barber booking platform — an INTERACTIVE, agent-driven walkthrough with TWO parts. (1) Set up ALL the pre-code app-runtime wiring so the build stays pure code: connect a Stripe SANDBOX account via the Stripe MCP / CLI and verify `livemode:false` (the consent page defaults to LIVE — you must switch to sandbox), put its `STRIPE_SECRET_KEY` (`sk_test_…`) in Vercel env (A4), create the webhook endpoint against `https://<vercel-url>/api/stripe/webhook` (event `checkout.session.completed`) + put `STRIPE_WEBHOOK_SECRET` (`whsec_…`) in Vercel env (A5) — the endpoint won't deliver until the build ships the route, tested in M2.1 Step 9, which is expected — and put `SUPABASE_SECRET_KEY` (the Supabase `sb_secret_…` service-role key both serverless functions need to write past RLS; never `VITE_`-prefixed) in Vercel env (A6), then redeploy. (2) Promote ONE existing account to `role='admin'` — there is no public admin sign-up; the person signs up normally via /login, you find them with SELECT id,email,role FROM profiles, and promote them with a ONE-OFF Supabase migration (UPDATE public.profiles SET role='admin') applied via `mcp__claude_ai_Supabase__apply_migration`. Admin lives in THIS prereq because admin only matters once payment exists (the later payout/settlement work consumes it). Manual, dashboard-only actions the student MUST do (you can't): WHICH email to promote to admin, and — since Vercel MCP doesn't manage env vars and Stripe MCP doesn't manage webhook endpoints — the three Vercel env vars + the webhook endpoint. Use when the student starts M2.1, says "啟動 M2.1 的前置作業", "set up Stripe sandbox", "connect Stripe", "put the Stripe secret key in Vercel", "set up the Stripe webhook endpoint", "add the Supabase service-role key", "promote my admin user", "create an admin account", or when `m2.1-buyer-to-admin-payments` / `-checklist` detects Stripe isn't connected, the service-role key is missing, or no admin exists.
+description: One-time setup before Milestone 2.1 of the barber booking platform — an INTERACTIVE, agent-driven walkthrough with TWO parts. (1) Set up ALL the pre-code app-runtime wiring so the build stays pure code: connect a Stripe SANDBOX account via the Stripe MCP / CLI and verify `livemode:false` (the consent page defaults to LIVE — you must switch to sandbox), put its `STRIPE_SECRET_KEY` (`sk_test_…`) in Vercel env (A4), create the webhook endpoint against `https://<vercel-url>/api/stripe/webhook` (event `checkout.session.completed`) + put `STRIPE_WEBHOOK_SECRET` (`whsec_…`) in Vercel env (A5) — the endpoint won't deliver until the build ships the route, tested in M2.1 Step 9, which is expected — and put `SUPABASE_SECRET_KEY` (the Supabase `sb_secret_…` service-role key both serverless functions need to write past RLS; never `VITE_`-prefixed) in Vercel env (A6), then redeploy. (2) Promote ONE existing account to `role='admin'` — there is no public admin sign-up; the person signs up normally via the app's sign-in/sign-up route (Lovable scaffolds vary — often /sign-up + /sign-in), you find them with SELECT id,email,role FROM profiles, and promote them with a ONE-OFF Supabase migration (UPDATE public.profiles SET role='admin') applied via the Supabase MCP's apply-migration capability — THEN repoint the M1.1 login redirect off `/admin/payouts` (which 404s until M2.2) to `/barbers` so the newly-promoted admin isn't stranded. Admin lives in THIS prereq because admin only matters once payment exists (the later payout/settlement work consumes it). Manual, dashboard-only actions the student MUST do (you can't): WHICH email to promote to admin, and — since Vercel MCP doesn't manage env vars and Stripe MCP doesn't manage webhook endpoints — the three Vercel env vars + the webhook endpoint. Use when the student starts M2.1, says "啟動 M2.1 的前置作業", "set up Stripe sandbox", "connect Stripe", "put the Stripe secret key in Vercel", "set up the Stripe webhook endpoint", "add the Supabase service-role key", "promote my admin user", "create an admin account", or when `m2.1-buyer-to-admin-payments` / `-checklist` detects Stripe isn't connected, the service-role key is missing, or no admin exists.
 ---
 
 # M2.1 Prerequisites — Stripe sandbox + promote your admin user (the agent drives)
@@ -31,7 +31,7 @@ Before any setup, confirm you're building on the real, current state — **the s
 
 > Have the student **`git pull` on `main`** and confirm the repo is current before you touch anything.
 
-Then verify the **specific carryover objects M2.1's checkout route + dialog rewire depend on** actually exist (a failing read here tells the student exactly what to backfill, instead of a silent mid-build failure). Via the Supabase MCP **`execute_sql`**:
+Then verify the **specific carryover objects M2.1's checkout route + dialog rewire depend on** actually exist (a failing read here tells the student exactly what to backfill, instead of a silent mid-build failure). Use the Supabase MCP's **execute-SQL** capability (resolve the concrete tool from the connector — it's a generic `execute_sql`). Keep this a **single `SELECT`** (below) rather than several statements: `execute_sql` returns only the **last** statement's rows, so a multi-statement batch would silently drop the earlier checks.
 
 ```sql
 select to_regclass('public.bookings')      as bookings,        -- M1.2 booking table (checkout reads its price snapshot)
@@ -63,7 +63,7 @@ No activation needed for sandbox. Wait for a yes before connecting.
 > 3. When it asks for permissions, click **"Write"** for all permissions.
 > 4. Click **Authorize**."
 
-Then do the MCP handshake yourself (`mcp__claude_ai_Stripe__authenticate` → `mcp__claude_ai_Stripe__complete_authentication`).
+Then do the Stripe MCP auth handshake yourself — the connector's authenticate → complete-authentication pair (resolve the concrete tool names from the connector; don't assume a fixed `mcp__claude_ai_Stripe__…` literal).
 
 > ⚠️ **The #1 foot-gun: the Stripe consent page defaults to LIVE.** When the OAuth/consent page opens, there is an **account / mode selector** — it lands on the **live** account by default. **Switch it to a sandbox** (test) account *before* you approve. If you approve on live, every key and call below is a live key and you risk touching real money. If you're not sure which you approved, treat it as wrong and re-auth into sandbox.
 
@@ -151,7 +151,7 @@ The barber platform has three roles — `customer`, `shop`, `admin`. M0's sign-u
 
 **Guide the student through it, then wait.** Say something like:
 
-> "Let's make the account that will become your admin. Decide which email to use (your own is the obvious choice) and **tell me that email** — I can't guess it, and I'll promote exactly that one account. On your **live site** (`/login`):
+> "Let's make the account that will become your admin. Decide which email to use (your own is the obvious choice) and **tell me that email** — I can't guess it, and I'll promote exactly that one account. On **your app's sign-in / sign-up route** (Lovable scaffolds vary — it's usually `/sign-up` + `/sign-in`, sometimes `/login`; use whatever your app actually exposes — if unsure, open the deployed site and find the sign-up link):
 > 1. **Sign up a new user** as a **Customer** (e.g. `uopspop@gmail.com`) — customer or shop, doesn't matter; we only flip the role afterward.
 > 2. **Confirm the email** (check the inbox for the confirmation link and click it).
 > 3. **Sign in** with that account.
@@ -161,7 +161,7 @@ Wait until the student gives you the email **and** confirms they've signed up + 
 
 ### B2 — Find them in `profiles`
 
-Ask the Supabase MCP (`mcp__claude_ai_Supabase__execute_sql`) to look the account up by email:
+Use the Supabase MCP's **execute-SQL** capability (resolve the actual tool name from the connector — it's a generic `execute_sql`, not a `mcp__claude_ai_Supabase__…` literal) to look the account up by email. **Run one statement per `execute_sql` call** — batching multiple statements returns only the last one's rows:
 
 ```sql
 SELECT id, email, role FROM public.profiles WHERE email = '<your-email>';
@@ -171,7 +171,7 @@ Confirm exactly one row comes back and note its current `role` (expected `buyer`
 
 ### B3 — Promote with a ONE-OFF MIGRATION (never a raw ad-hoc UPDATE)
 
-Per [[supabase-best-practice]], **all** schema/data changes go through a migration file — *never* a raw ad-hoc prod `UPDATE` in the SQL console. Apply this via `mcp__claude_ai_Supabase__apply_migration` (suggested name `promote_admin_<you>`):
+Per [[supabase-best-practice]], **all** schema/data changes go through a migration file — *never* a raw ad-hoc prod `UPDATE` in the SQL console. Apply this via the Supabase MCP's **apply-migration** capability (the actual tool is a generic `apply_migration` — resolve it from the connector, don't hardcode a `mcp__claude_ai_Supabase__…` literal; suggested name `promote_admin_<you>`):
 
 ```sql
 -- one-off: promote a single, known account to admin
@@ -188,7 +188,30 @@ where email = '<your-email>';
 SELECT id, email, role FROM public.profiles WHERE email = '<your-email>';   -- role = 'admin'
 ```
 
-> "Now **log out and back in** on the site so the app re-reads `role='admin'`. The admin-only payout page that uses this role is built in a later milestone — but the admin account must exist *before* that page is useful, which is why we do it now."
+Confirm the one row now reads `role = 'admin'`. **Don't tell the student to log in yet** — do B5 FIRST, or their very first admin login lands on a 404 (see below).
+
+### B5 — Repoint the `admin` login redirect so the new admin isn't stranded on a 404 ← REQUIRED, do NOT skip
+
+**This is the step that's easy to miss and breaks the moment you promote.** Back in M1.1 the post-login redirect was written to route each role somewhere — and it already routes `role='admin'` → `/admin/payouts`. **That page does not exist until M2.2.** It never fired before because *there was no admin account* — until you just promoted one in B3. So the instant this admin logs in, they hit `/admin/payouts` and **404**.
+
+The clean, in-scope fix is to **stop stranding the admin until M2.2 builds the page**: point `admin` at the marketplace (`/barbers`) for now, with a `TODO(M2.2)` to restore the real target.
+
+> **What you (Claude Code) do:** find the post-login redirect (the M1.1 auth/login component — commonly `src/pages/Login.tsx` or wherever the role→route switch lives; grep for `admin` + a redirect/`navigate`/`Navigate` to confirm) and change the `admin` branch from `/admin/payouts` to `/barbers`, leaving a breadcrumb so M2.2 restores it. For example:
+>
+> ```ts
+> // M1.1 login redirect. /admin/payouts doesn't exist until M2.2 — we must NOT strand the
+> // newly-promoted admin on a 404, so send admin to the marketplace for now.
+> // TODO(M2.2): restore admin → "/admin/payouts" when the payout page ships.
+> if (role === 'admin') return '/barbers'
+> ```
+>
+> Then commit + push (recall the GitHub PAT — see the build skill's discovery note) so the redeploy carries the fix. If the redirect already sends `admin` somewhere that exists (some scaffolds default everyone to `/barbers`), there's nothing to change — just confirm it doesn't point at `/admin/payouts`.
+
+> **Note for Claude Code:** this is a **prereq step, not an M2.2 step** — promoting the admin is what *activates* the dead route, so the fix belongs right here next to the promotion. M2.2 (`[[m2.2-admin-to-seller-payment]]`) builds `/admin/payouts` and restores the redirect target; leave the `TODO(M2.2)` so that's discoverable.
+
+### B6 — Now have the student log in
+
+> "Now **log out and back in** on the site so the app re-reads `role='admin'` — you'll land on the marketplace (`/barbers`) for now. The admin-only payout page (`/admin/payouts`) is built in a later milestone (M2.2); until then we deliberately route admin to the marketplace so you're not dropped on a 404. The admin account must exist *before* that page is useful, which is why we promote it now."
 
 **Why this can't be self-escalated (say it once):** there is no UI that writes `admin`; the sign-up tab only writes `buyer`/`shop`; the only path to `admin` is a migration *you* run with the service-role connection. The later admin-only pages additionally keep `role` changes off the client path and gate the admin route server-side ([[supabase-best-practice]]).
 
@@ -202,7 +225,8 @@ SELECT id, email, role FROM public.profiles WHERE email = '<your-email>';   -- r
 - ✅ **`SUPABASE_SECRET_KEY` in Vercel env + redeploy done (student-confirmed)** — the Supabase **service-role / secret key** (`sb_secret_…`) is saved as a Production env var (A6) and a redeploy has happened, so M2.1's checkout + webhook functions can write **past RLS**. It is **not** `VITE_`-prefixed (that would leak a full-database key into the browser bundle) — it's server-only.
 - ✅ **You know the two webhook-secret sources** — `stripe listen` (rotating, local) ≠ this dashboard endpoint (stable, Vercel prod); the build uses the dashboard one you just created ([[stripe-best-practice]] Rule 4).
 - ✅ **The student told you WHICH email to promote** — you promoted exactly that one account.
-- ✅ **Exactly one account promoted** — `SELECT ... WHERE email=...` shows `role='admin'`, applied via `apply_migration` (in the migration history), not a console edit.
+- ✅ **Exactly one account promoted** — `SELECT ... WHERE email=...` shows `role='admin'`, applied via the Supabase apply-migration capability (in the migration history), not a console edit.
+- ✅ **The `admin` login redirect no longer strands the admin on a 404 (B5)** — the M1.1 post-login redirect was repointed from `/admin/payouts` (doesn't exist until M2.2) to `/barbers`, with a `TODO(M2.2)` to restore it. The promoted admin logs in and lands on the marketplace, not a 404. (If the scaffold already routed admin somewhere that exists, confirmed it doesn't point at `/admin/payouts`.)
 - ✅ **Sign-up still only writes `buyer`/`shop`** — `admin` was reached only by your migration; no self-escalation path exists.
 
 ## Next step
