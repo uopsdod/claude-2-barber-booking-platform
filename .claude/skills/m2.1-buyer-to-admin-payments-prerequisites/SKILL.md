@@ -108,8 +108,18 @@ This is an **app-runtime key → Vercel env, NOT AWS Secrets Manager** ([[aws-se
 
 Create the Stripe webhook endpoint now and stash its `whsec_…` in Vercel too — so **all** the Stripe-dashboard clicking and Vercel-env pasting is done up front, and M2.1's build stays pure code. The endpoint's path (`/api/stripe/webhook`) is a **fixed convention** and the app has been Vercel-deployed since M0, so the URL is fully known now — even though the *route itself* isn't built until M2.1 Step 6/7. That's fine: Stripe registers an endpoint regardless of whether the path yet exists, and hands you the signing secret immediately. Stripe MCP does not manage webhook endpoints in 2026, so this is a **manual dashboard step** too.
 
-> 到 Stripe dashboard（**確認右上角在 sandbox / test mode**）→ Developers → **Webhooks → Add endpoint**：
-> - **Endpoint URL**：`https://<your>.vercel.app/api/stripe/webhook`（用你 M0/M1 的正式 Vercel 網址；路徑固定就是 `/api/stripe/webhook`）
+**First, get the student's Vercel site URL — you can't guess it.** The base URL is the only un-discoverable piece; the `/api/stripe/webhook` path is fixed. Ask:
+
+> 「請把你的 **Vercel 正式網址**貼給我（M0/M1 部署的那個，例如 `https://barber-xxxx.vercel.app`）——我會幫你組好完整的 Endpoint URL，你直接複製貼到 Stripe 就好。」
+
+**Then hand back the exact Endpoint URL** — take what they gave you, strip any trailing slash, and append `/api/stripe/webhook`. Show it back verbatim so they copy-paste (don't make them assemble it):
+
+> 「你的 Stripe Webhook **Endpoint URL** 就是：
+> `https://<你貼的網址>/api/stripe/webhook`
+> 到 Stripe dashboard（**確認右上角在 sandbox / test mode**）→ Developers → **Webhooks → Add endpoint**，把上面這行貼進 **Endpoint URL**。」
+
+> 建立這個端點時：
+> - **Endpoint URL**：貼上上面幫你組好的那行（`https://<你的 Vercel 網址>/api/stripe/webhook`）
 > - **Events to send**：只勾 **`checkout.session.completed`**（`charge.refunded` 是 v2，先不要加）
 > - 建立後在端點頁點 **Reveal** 拿到 **Signing secret**（`whsec_…`）。
 > 然後到 **Vercel → Settings → Environment Variables**，新增 `STRIPE_WEBHOOK_SECRET = whsec_…`（Production scope），存檔。
