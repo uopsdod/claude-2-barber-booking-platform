@@ -14,7 +14,7 @@ The **bright line** that prevents most confusion: **app-runtime keys** — `STRI
 
 AWS access is the **`[default]` profile** (an IAM user with admin, written to `~/.aws/credentials`), read by the **AWS API MCP** (`call_aws`) in Cowork. **Every** call pins **`--region us-east-1`**. When you (Claude Code) guide a student through AWS work, **apply these rules proactively** — stop them before they break one.
 
-> **Trimmed from a serverless flight course's AWS skill.** That course ran a whole Lambda/DynamoDB/SQS/API-Gateway stack on AWS; **this course has none of that** — all app logic is Next.js API routes + Supabase, so the Lambda/DDB/VPC/IAM-role rules **do not apply**. What carried over is the **two-kinds-of-secret** discipline, **region pinning**, and the **Route 53** DNS handling. AWS here is small and deliberate.
+> **AWS here is small and deliberate — no compute stack.** This course runs **no** Lambda / DynamoDB / SQS / API-Gateway — all app logic is Next.js API routes (Vercel serverless functions) + Supabase, so any Lambda/DDB/VPC/IAM-role rules **do not apply**. AWS does exactly two jobs: the **two-kinds-of-secret** discipline (the GitHub PAT in Secrets Manager) and **Route 53** DNS for the M3 custom domain — both with **region pinning**. That's it.
 
 ---
 
