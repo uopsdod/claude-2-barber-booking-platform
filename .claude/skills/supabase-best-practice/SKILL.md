@@ -5,7 +5,7 @@ description: Hard rules for working with Supabase in the 抽成制理髮師預�
 
 # Supabase Best Practice (Barber Booking — REAL DATA, multi-tenant, RLS)
 
-> **Read this first — it changes everything.** Unlike a flight/notifier course where Supabase was **auth-only**, here Supabase is the **real application database**: `profiles`, `platform_settings`, `barbers`, `services`, `bookable_slots`, `booking_slots`, `bookings`, `commission_rates`, `payouts` (+ the `owed_bookings` and `bookings_with_start` views), plus the `profiles.role` stub from M0. It is **multi-tenant** — every barber's data lives in shared tables, and the **only** thing keeping shop A from reading/editing shop B's barber (or a customer from reading a shop's bank account) is **Row Level Security**. So the migration, RLS, and key-hygiene rules below are **load-bearing**, not optional.
+> **Read this first — it changes everything.** In this course Supabase is not auth-only — it is the **real application database**: `profiles`, `platform_settings`, `barbers`, `services`, `bookable_slots`, `booking_slots`, `bookings`, `commission_rates`, `payouts` (+ the `owed_bookings` and `bookings_with_start` views), plus the `profiles.role` stub from M0. It is **multi-tenant** — every barber's data lives in shared tables, and the **only** thing keeping shop A from reading/editing shop B's barber (or a customer from reading a shop's bank account) is **Row Level Security**. So the migration, RLS, and key-hygiene rules below are **load-bearing**, not optional.
 
 When you (Claude Code) guide a student through any Supabase work (M0's `profiles` stub + `platform_settings`, M1.1's barber/schedule schema, M1.2's bookings + booking_slots, M2.1's webhook writes + `commission_rates`, M2.2's flexible per-shop `payouts` batches and the admin promotion), **apply these rules proactively** — stop them before they break one. Each maps to a real failure mode of a multi-tenant data-on-Supabase build.
 
@@ -79,6 +79,7 @@ create policy "shops_owner_write" on public.barbers for all
 - `services` / `bookable_slots`: public `select`; `insert/update/delete` only where the parent `barber.shop_id = auth.uid()`. (`bookable_slots` is just a time window — no status column; see Rule 6.)
 - `bookings`: a customer reads/writes **their own** (`customer_id = auth.uid()`); a shop reads bookings for barbers they own — and because `bookings` has **no `barber_id`**, that read policy **joins through the service**: `exists (select 1 from services sv join barbers b on b.id = sv.barber_id where sv.id = bookings.service_id and b.shop_id = auth.uid())`. The **webhook writes via the service-role key** (Rule 4), which bypasses RLS by design — that's correct, because Stripe isn't a logged-in user.
 - **Run `get_advisors` after every migration** — it flags tables with RLS off or policy gaps. Treat any "RLS disabled" advisory as a blocker.
+- **⚠️ ANY view over an RLS table MUST be created `with (security_invoker = true)`.** On Postgres 15+/Supabase a plain `create view` runs with the **view owner's** rights (`security_definer`), so it **silently BYPASSES the base table's RLS** — a view like `bookings_with_start` or `owed_bookings`, queried by a customer/shop, would return **every** tenant's rows, and `get_advisors` throws a hard **`security_definer_view` ERROR**. `security_invoker = true` makes the view run as the **caller**, so the base-table RLS applies through it. This is **not** automatic and **not** optional — a view is the single easiest way to accidentally undo all your RLS. (`create OR REPLACE view` can't *add* the option to a pre-existing view — `drop view if exists` then `create view … with (security_invoker = true)` for idempotency.) The M1.2 `bookings_with_start`, M1.1 `barbers_public`, and M2.2 `owed_bookings` views all rely on this.
 
 ---
 
@@ -99,13 +100,13 @@ create policy "shops_owner_write" on public.barbers for all
 
 ### Rule 4 — Publishable key in the browser; service-role key ONLY in the webhook + admin server routes (Vercel server env, never the browser).
 
-> **The rule:** The front-end uses **only** the Supabase **publishable key** (`sb_publishable_*`, RLS-protected, browser-safe). The **service-role key** — which **bypasses RLS entirely** — lives **only** in **Vercel server env** (`SUPABASE_SERVICE_ROLE_KEY`) and is read **only** by server-side code: the Stripe webhook (M2.1) and admin server routes (M2.2). It must never appear in client code, a Lovable prompt, a commit, a `NEXT_PUBLIC_*` var, or a screenshot.
+> **The rule:** The front-end uses **only** the Supabase **publishable key** (`sb_publishable_*`, RLS-protected, browser-safe). The **service-role key** — which **bypasses RLS entirely** — lives **only** in **Vercel server env** (`SUPABASE_SECRET_KEY`) and is read **only** by server-side code: the Stripe webhook (M2.1) and admin server routes (M2.2). It must never appear in client code, a Lovable prompt, a commit, a `NEXT_PUBLIC_*` var, or a screenshot.
 
 **Why:** The publishable key can only do what RLS + auth allow — safe to ship. The **service-role key owns the database**: it ignores every RLS policy, so anyone who gets it can read every shop's bank account and rewrite the payout ledger. The webhook *needs* it (Stripe carries no user session, so it must flip a booking to `paid` past RLS) and the admin payout writes need it — but those are **server-only** contexts. The instant it's prefixed `NEXT_PUBLIC_` or pasted into a component, it's in every visitor's network tab. There is no recovering a leaked service-role key except rotation.
 
 **How to apply:**
-- Front-end / Lovable: publishable (anon) key only — `NEXT_PUBLIC_SUPABASE_URL` + the publishable key.
-- Server routes (`/api/stripe/webhook`, `/api/admin/*`): create the client with `SUPABASE_SERVICE_ROLE_KEY` from **Vercel server env** (no `NEXT_PUBLIC_` prefix). This key is read at request time; it is **not** stored in AWS ([[aws-secrets-best-practice]]).
+- Front-end (the in-repo Vite/React client): publishable (anon) key only — `NEXT_PUBLIC_SUPABASE_URL` + the publishable key.
+- Server routes (`/api/stripe/webhook`, `/api/admin/*`): create the client with `SUPABASE_SECRET_KEY` from **Vercel server env** (no `NEXT_PUBLIC_`/`VITE_` prefix). This key is read at request time; it is **not** stored in AWS ([[aws-secrets-best-practice]]).
 - If a student pastes a `service_role` key into the front-end, a `NEXT_PUBLIC_*` var, or a commit → **stop them**, explain the blast radius, and rotate it (dashboard → Settings → API → roll).
 - **Go-live check:** grep the deployed browser bundle for `service_role` / the service key → must be **absent** (only the publishable key may appear client-side).
 
@@ -134,8 +135,10 @@ create policy "shops_owner_write" on public.barbers for all
 
 **How to apply:**
 - Sequence every build step that migrates as: **(1) `apply_migration` → (2) `get_advisors` (Rule 2) → (3) `generate_typescript_types` → (4) write the UI/route.** Don't skip (3).
+- ⚠️ **`generate_typescript_types` returns the types to YOU (the agent) — it does NOT write the file.** The tool's result *is* the TypeScript source; you must **capture that output and overwrite `src/integrations/supabase/types.ts`** in the app repo yourself, then commit it. "Regenerate types" = call the tool **and** write the file. Skip the write and the repo's `types.ts` stays stale.
 - Commit the regenerated `types.ts` alongside the migration — never let the committed types drift behind the committed schema.
-- If a student sees "property X does not exist on type" for a column they *know* they added, the first move is **regenerate types**, not edit the query.
+- If a student sees "property X does not exist on type" for a column they *know* they added, the first move is **regenerate types (and write the file)**, not edit the query.
+- ⚠️ **A local build in the Cowork sandbox is often possible — but installs may exceed the per-call timeout, so RESUME rather than give up.** A first `npm ci` can be **killed** at the per-call ceiling (~40s), which earlier looked like "you can't build here." The pattern that works: **`timeout NN npm ci` across TWO calls** (e.g. `timeout 43 npm ci` — the first pass warms the npm cache, the second completes in ~8–29s), **then `npm run build`** (Vite/esbuild) runs cleanly in ~8s. That `vite build` **IS the real build gate.** If installs genuinely won't complete, fall back to static review + the Vercel build log (Rule 7). **Do NOT gate on `tsc --noEmit`** — a fresh install throws hundreds of type errors across vendored shadcn/Radix `ui/*` (a React-types version mismatch) unrelated to your code; ignore that noise. And note **`vite build` only type-STRIPS, it does NOT type-check** — a green build means "compiled + bundled", not "types are perfect" (that's fine; your regenerated Supabase types keep the app-data queries honest).
 
 ---
 
@@ -149,6 +152,7 @@ create policy "shops_owner_write" on public.barbers for all
 - **Cowork:** use `web_fetch_vercel_url` (fetches from outside the sandbox) or open the URL in a browser. Treat the fetch's `200`, not a `curl` exit code, as ground truth. **Also don't trust Vercel `get_project`'s `domains` array** for an attach check — it lags; the fetch is ground truth.
 - **SPA deep links (`/login`, `/barbers`, `/admin/payouts`):** the URL-fetch MCP **only fetches the root reliably** — for a subpath it returns *"Unable to create shareable URL…"*, which is a tool limitation, **not** a failure. This is a Vite **SPA**, so every non-`/api` path is served by the `index.html` shell via the `vercel.json` catch-all rewrite. Verify deep-link resolution by **(a) root `200` + (b) confirming the `"/((?!api/).*)" → /index.html` rewrite exists** — reserve real per-path checks for **browser navigation** (the decisive, student-performed test).
 - The **CLI-mode** `curl` blocks stay in the skills for students running a real shell — they're labeled CLI-mode; don't run them in the Cowork sandbox and conclude the site is down.
+- **The Vercel MCP usually DOES see the project** — `list_projects` returns it and `web_fetch_vercel_url` returns real 200s, so deployment verification (and reading `get_deployment → meta.githubRepo` to resolve the app repo) works end-to-end. **But keep this fallback:** if `list_projects` comes back **EMPTY** or the project isn't visible, do **not** conclude the deploy is broken — the connected Vercel account/team may be a *different* account than the one that owns the deployment (the connector is scoped elsewhere). Treat "Vercel MCP can't see it" as a **connector-scope issue, not a deploy failure**: have the student confirm which Vercel account owns the project, or open the deployment URL in a browser. In that case you lose the build-log path — fall back to static review (Rule 6) + eyeballing the live site.
 
 ---
 
@@ -158,7 +162,7 @@ create policy "shops_owner_write" on public.barbers for all
 2. **A new table with RLS still off** → Rule 2 (`get_advisors` flags it; the publishable key can read/write every tenant's rows).
 3. **Bank account numbers showing up in the `/barbers` listing payload, or bank columns added to `barbers`** → Rule 3 (bank fields are shop-level on `profiles`; `barbers` must carry none, and no public read may project them).
 4. **A join (`select '*, services(*)'`) returns empty with no error** → Rule 2 (RLS denied one side silently; check the policy, not the query).
-5. **`SUPABASE_SERVICE_ROLE_KEY` prefixed `NEXT_PUBLIC_` or in a component** → Rule 4 (it bypasses RLS — rotate immediately; it belongs in Vercel server env only).
+5. **`SUPABASE_SECRET_KEY` prefixed `NEXT_PUBLIC_`/`VITE_` or in a component** → Rule 4 (it bypasses RLS — rotate immediately; it belongs in Vercel server env only).
 6. **The webhook can't flip a booking to `paid` (RLS denies it)** → Rule 4 (the webhook must use the **service-role** client; the publishable key can't write past RLS for a non-user actor).
 7. **A `unique(shop_id)` on `barbers` blocking a second barber, or a `unique(shop_id, month)` on `payouts` blocking a second batch** → Rule 5 (a shop runs MANY barbers AND has MANY payout batches; index `shop_id` on both, make neither unique; no-double-pay is on `bookings.payout_id`, not a unique on `payouts`).
 8. **Skipping `get_advisors` after a migration** → run it every time; it's the cheapest catch for an RLS gap before it ships.

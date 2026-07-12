@@ -10,11 +10,11 @@ This course uses AWS for **exactly two jobs**, and the discipline is in keeping 
 1. **Secrets Manager** — stores **operational / developer** secrets only, under the **`barber-project/*`** namespace: the **GitHub PAT** (`barber-project/github`) that lets Claude Code push to the repo, and any **API key you use during local development**. These are reached during the *build*, not at app request time.
 2. **Route 53** — holds the **DNS records** for the M3 custom domain. We do **not** register a domain via AWS; we take the **Vercel-provided DNS records** and enter them into Route 53.
 
-The **bright line** that prevents most confusion: **app-runtime keys** — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, the Supabase URL + publishable key — live in **Vercel environment variables**, **not** AWS. They're read by Next.js API routes at request time; routing them through AWS would add a request-time AWS dependency for no benefit. AWS holds the secrets you reach for *while building*; Vercel holds the secrets the *running app* reads.
+The **bright line** that prevents most confusion: **app-runtime keys** — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SUPABASE_SECRET_KEY`, the Supabase URL + publishable key — live in **Vercel environment variables**, **not** AWS. They're read by Next.js API routes at request time; routing them through AWS would add a request-time AWS dependency for no benefit. AWS holds the secrets you reach for *while building*; Vercel holds the secrets the *running app* reads.
 
 AWS access is the **`[default]` profile** (an IAM user with admin, written to `~/.aws/credentials`), read by the **AWS API MCP** (`call_aws`) in Cowork. **Every** call pins **`--region us-east-1`**. When you (Claude Code) guide a student through AWS work, **apply these rules proactively** — stop them before they break one.
 
-> **Trimmed from a serverless flight course's AWS skill.** That course ran a whole Lambda/DynamoDB/SQS/API-Gateway stack on AWS; **this course has none of that** — all app logic is Next.js API routes + Supabase, so the Lambda/DDB/VPC/IAM-role rules **do not apply**. What carried over is the **two-kinds-of-secret** discipline, **region pinning**, and the **Route 53** DNS handling. AWS here is small and deliberate.
+> **AWS here is small and deliberate — no compute stack.** This course runs **no** Lambda / DynamoDB / SQS / API-Gateway — all app logic is Next.js API routes (Vercel serverless functions) + Supabase, so any Lambda/DDB/VPC/IAM-role rules **do not apply**. AWS does exactly two jobs: the **two-kinds-of-secret** discipline (the GitHub PAT in Secrets Manager) and **Route 53** DNS for the M3 custom domain — both with **region pinning**. That's it.
 
 ---
 
@@ -53,7 +53,7 @@ The hard rules apply identically in both — only the command surface differs.
 
 ### Rule 2 — Secrets Manager is for OPERATIONAL/DEV secrets only (`barber-project/*`). APP-RUNTIME keys go to Vercel env, not AWS.
 
-> **The rule:** Store in Secrets Manager **only** the secrets you use *while building*: the **GitHub PAT** (`barber-project/github`) and any **local-dev API key** — under the **`barber-project/*`** namespace. **Never** put `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, or `SUPABASE_SERVICE_ROLE_KEY` in AWS — those are **app-runtime** keys and live in **Vercel environment variables**.
+> **The rule:** Store in Secrets Manager **only** the secrets you use *while building*: the **GitHub PAT** (`barber-project/github`) and any **local-dev API key** — under the **`barber-project/*`** namespace. **Never** put `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, or `SUPABASE_SECRET_KEY` in AWS — those are **app-runtime** keys and live in **Vercel environment variables**.
 
 **Why:** There are **two kinds of secret with two homes**, and mixing them is the central confusion:
 - **Operational/dev secrets** (GitHub PAT, local-dev keys) are read by **you/Claude Code during the build** — to push code, to run a script locally. Caching them once in Secrets Manager means a fresh Cowork session **recalls the same token** instead of re-pasting it.

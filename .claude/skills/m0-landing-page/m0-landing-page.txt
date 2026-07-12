@@ -210,6 +210,8 @@ Prompt """
   default auth.users; capture the chosen role in auth user metadata only). Those
   come in later milestones. Stick to landing page + role-tab auth + the
   role-aware /barbers placeholder shell.
+
+  note: the only routes are /, /login, and /barbers. Do not add /app, /dashboard, or any other route. Sign-in would go to /barbers page for both roles. 
 """
 
 WHY THIS PROMPT IS SHAPED THIS WAY: it pins the Novara-style marketplace
@@ -498,7 +500,7 @@ Prompt """
 
 Note: keep the publishable/anon key in the front-end (correct — RLS-protected).
 The service-role key is NOT in the browser — it only goes into Vercel server env
-(SUPABASE_SERVICE_ROLE_KEY) for server routes/webhooks (M1.1+). Never paste a
+(SUPABASE_SECRET_KEY) for server routes/webhooks (M1.1+). Never paste a
 service-role key into the front-end. App-runtime Supabase keys live in Vercel
 env, not AWS.
 
@@ -668,9 +670,8 @@ When m0-landing-page-checklist is green:
 「M0 完成了！你現在有一個能用 Customer / Shop 兩種身分註冊登入的線上理髮預約入口網站，
 而且 Cowork 專案、AWS / Vercel / Supabase 連接器、GitHub token、profiles.role 都備好了。
 準備好的話跟我說『啟動 M1.1』，我們來讓理髮店開店、建立預約排程。」
-Then run m1.1-barber-shop-and-schedule-prerequisites first (it reuses the AWS
-access, GitHub token, and Supabase project set up here), then
-m1.1-barber-shop-and-schedule.
+Then run m1.1-seller-setup-prerequisite first (it reuses the AWS access, GitHub
+token, and Supabase project set up here), then m1.1-seller-setup.
 
 
 REFERENCE
