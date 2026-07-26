@@ -286,7 +286,7 @@ Prompt """
   First detect Mac/Linux vs Windows for the correct path (~/.aws/credentials
   vs %USERPROFILE%\.aws\credentials), then write the [default] profile —
   preserving any other existing profiles. Then test with
-  aws sts get-caller-identity.
+  aws sts get-caller-identity. note: you don't need to install aws cli. As long as the credential is set, this task is done. 
 """
 
   3. Back in Cowork -> Customize -> Connectors -> search "AWS API MCP" ->
