@@ -94,15 +94,23 @@ list_tables   →  should list at least public.profiles
 
 The onboarding form + `/shop/bookings` ship via the same push loop M0 set up. The PAT was cached in M0 **under whatever name that run chose** — so **scan, don't assume the name**.
 
-Run the canonical list once and scan it:
-```bash
-aws secretsmanager list-secrets --region us-east-1 --query "SecretList[].Name"
+Run the canonical list once and scan it (AWS MCP `aws___run_script`):
+```python
+resp = await call_boto3(service_name="secretsmanager", operation_name="ListSecrets",
+                        region_name="us-east-1")
+result = [s["Name"] for s in resp["SecretList"]]
+result
 ```
+(CLI mode: `aws secretsmanager list-secrets --region us-east-1 --query "SecretList[].Name"`.)
 1. Pick the name that looks like the GitHub token — anything containing **`github`** (e.g. `barber-project/github`, `github-pat`, `barber/github`).
 2. Read it and pull out the token — **accept either shape**:
-   ```bash
-   aws secretsmanager get-secret-value --secret-id "<the name you found>" --region us-east-1 --query SecretString --output text
+   ```python
+   v = await call_boto3(service_name="secretsmanager", operation_name="GetSecretValue",
+                        region_name="us-east-1", params={"SecretId": "<the name you found>"})
+   result = v["SecretString"]
+   result
    ```
+   (CLI mode: `aws secretsmanager get-secret-value --secret-id "<name>" --region us-east-1 --query SecretString --output text`.)
    - JSON (`{"pat":"github_pat_…"}`) → use the `pat` field.
    - Bare string (`github_pat_…` with no JSON wrapper) → use the whole value. Don't `json.load`-and-fail.
    - Sanity-check it starts with `github_pat_` (fine-grained) or `ghp_` (classic).
@@ -111,12 +119,17 @@ aws secretsmanager list-secrets --region us-east-1 --query "SecretList[].Name"
      > "I don't see a GitHub token cached. Paste your **GitHub fine-grained PAT** — github.com/settings/personal-access-tokens → *Generate new token (fine-grained)* → *Only select repositories* → this repo → *Repository permissions → Contents → Read and write* → copy the `github_pat_…`."
 
      Wait (⚠️ write-credential — don't echo it back), then cache under the course-standard name:
-     ```bash
-     aws secretsmanager create-secret --name barber-project/github \
-       --secret-string '{"pat":"<their token>"}' --region us-east-1
+     ```python
+     import json
+     await call_boto3(service_name="secretsmanager", operation_name="CreateSecret",
+                      region_name="us-east-1",
+                      params={"Name": "barber-project/github",
+                              "SecretString": json.dumps({"pat": "<their token>"})})
+     result = "created barber-project/github"
+     result
      ```
 
-> **Note for Claude Code:** also confirm AWS itself is still wired (`aws sts get-caller-identity --query Account --output text --region us-east-1` returns an account id). If it errors, the `[default]` profile expired — send the student back to `[[m0-landing-page]]` Step 4 to re-write it. App-runtime Supabase keys live in **Vercel env**, not here ([[aws-secrets-best-practice]]).
+> **Note for Claude Code:** also confirm AWS itself is still wired — an AWS MCP call to `sts GetCallerIdentity` (`region_name="us-east-1"`) returns an account id. If the AWS tools are missing or the call fails with a sign-in / auth error, the AWS MCP session expired — have the student reconnect the AWS MCP connector and sign in again (`[[m0-landing-page]]` Step 4.2). If the old **AWS API MCP** (`call_aws`) is still enabled, have them disable it. App-runtime Supabase keys live in **Vercel env**, not here ([[aws-secrets-best-practice]]).
 
 ---
 
@@ -138,7 +151,7 @@ select to_regclass('public.barbers')          as barbers,
 - ✅ **App repo confirmed** — you have the **app** repo URL (the one Vercel deploys, with `package.json` + `src/`), distinguished from the skills-only `.claude/` repo, and stored it for the build skill (Step 0).
 - ✅ **M0 auth + `profiles.role`** — `profiles` exists, `role` column present, allowlist `customer|shop|admin` (Step 1).
 - ✅ **Supabase MCP reachable** — `list_tables` returns the project's tables (incl. `profiles`); `get_advisors` is callable (Step 2).
-- ✅ **GitHub PAT cached** — discovered in Secrets Manager (whatever name), shape tolerated; AWS `[default]` still wired (Step 3).
+- ✅ **GitHub PAT cached** — discovered in Secrets Manager (whatever name), shape tolerated; AWS MCP still connected (Step 3).
 - ✅ **Clean schema slate** — `barbers` / `services` / `bookable_slots` are NULL (don't exist yet), ready for M1.1's migration (Step 4).
 
 > **If you later check the live deploy via the Vercel MCP and `list_projects` is EMPTY / the project isn't visible — do NOT conclude the deploy is broken.** The connected Vercel account/team may differ from the one that owns the app's deployment (the connector is scoped to a different account). Treat "Vercel MCP can't see it" as a **connector-scope** issue, not a deploy failure: have the student confirm which Vercel account owns the project (or just open the deployment URL themselves). ([[supabase-best-practice]] Rule 7.)
