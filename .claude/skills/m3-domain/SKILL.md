@@ -1,6 +1,6 @@
 ---
 name: m3-domain
-description: 抽成制理髮師預約平台 Milestone 3 — bind the student's OWN custom domain to the Vercel-hosted booking app, with DNS hosted in AWS Route 53. The student brings a domain (no registration step); Vercel shows the exact DNS records, and Claude creates them in the Route 53 hosted zone via the already-connected AWS API MCP (call_aws), then waits for Vercel's green ✓ + HTTPS cert, and updates the Stripe webhook URL if Stripe is already live. Use when the student says "啟動 M3", "start M3", "綁網域", "綁自己的網域", "把預約網站掛到我的網域", "go live", "上線", or "正式開張".
+description: 抽成制理髮師預約平台 Milestone 3 — bind the student's OWN custom domain to the Vercel-hosted booking app, with DNS hosted in AWS Route 53. The student brings a domain (no registration step); Vercel shows the exact DNS records, and Claude creates them in the Route 53 hosted zone via the already-connected AWS MCP (call_boto3), then waits for Vercel's green ✓ + HTTPS cert, and updates the Stripe webhook URL if Stripe is already live. Use when the student says "啟動 M3", "start M3", "綁網域", "綁自己的網域", "把預約網站掛到我的網域", "go live", "上線", or "正式開張".
 ---
 
 # M3 — Custom Domain via Route 53（把預約網站掛上你自己的網域）
@@ -12,7 +12,7 @@ Takes the working booking platform (live on `*.vercel.app`) and puts it on **the
 By the end the student has:
 
 1. The custom domain (a **semantic subdomain** — `barber.yourdomain.com`) **added to the Vercel project**, with Vercel showing the exact DNS records it needs.
-2. Those **Vercel-provided records created in the Route 53 hosted zone** — a `CNAME` → `cname.vercel-dns.com` for the subdomain (plus, if Vercel asks, a merged `_vercel` ownership TXT), or `A`/`ALIAS` records for an apex — via the AWS API MCP (`call_aws` → `route53 change-resource-record-sets`, always **`UPSERT`**).
+2. Those **Vercel-provided records created in the Route 53 hosted zone** — a `CNAME` → `cname.vercel-dns.com` for the subdomain (plus, if Vercel asks, a merged `_vercel` ownership TXT), or `A`/`ALIAS` records for an apex — via the AWS MCP (`route53` `ChangeResourceRecordSets`, always **`UPSERT`**).
 3. Vercel showing the domain **Valid / green ✓** with an **automatic HTTPS cert** issued.
 4. The live booking app served over **`https://barber.yourdomain.com`** — landing, `/login`, `/barbers`, the booking pop-up — all working on the new host, with **Supabase Auth's Site URL pointed at the new host** so sign-up confirmation emails link there.
 5. *(If Stripe is already live)* the **Stripe webhook endpoint URL updated** to the custom domain, so payment confirmations keep flowing (forward-ref [[stripe-go-live]]).
@@ -26,20 +26,20 @@ Trigger phrases:
 - "綁網域" / "綁自己的網域" / "把預約網站掛到我的網域"
 - "go live" / "上線" / "正式開張"
 
-Requires M2.2 done (the booking + payout product works on the Vercel URL). Run **[[m3-domain-prerequisites]]** first — it's a lightweight carryover check (Vercel green, `call_aws` reaches Route 53, domain in hand), not a new account setup.
+Requires M2.2 done (the booking + payout product works on the Vercel URL). Run **[[m3-domain-prerequisites]]** first — it's a lightweight carryover check (Vercel green, the AWS MCP reaches Route 53, domain in hand), not a new account setup.
 
 ## Execution mode (Cowork-first)
 
-This milestone is **DNS + two dashboards** (Vercel, plus the Stripe dashboard only if live). The Route 53 record creation runs through the **AWS API MCP (`call_aws`)** you connected in M0 — no new auth.
+This milestone is **DNS + two dashboards** (Vercel, plus the Stripe dashboard only if live). The Route 53 record creation runs through the **AWS MCP** connector you connected in M0 (`aws___run_script` → `call_boto3`) — no new auth.
 
 | Action | Cowork mode | Pure CLI mode |
 |---|---|---|
 | Add domain to Vercel project | **manual dashboard step** — Settings → Domains → Add (no Vercel-domain MCP tool) | `vercel domains add <host>` |
-| Create the records in Route 53 | AWS API MCP → `call_aws` (`route53 change-resource-record-sets`) | `aws route53 change-resource-record-sets …` |
+| Create the records in Route 53 | AWS MCP → `route53` `ChangeResourceRecordSets` | `aws route53 change-resource-record-sets …` |
 | Confirm domain serves HTTPS | Vercel dashboard ✓ + a URL-fetch tool (sandbox `curl` is proxy-blocked) | `curl -sSI https://<host>` |
 | Update Stripe webhook (if live) | **manual dashboard step** in Stripe (Stripe MCP doesn't manage webhook endpoints) | Stripe dashboard |
 
-`aws` / `call_aws` commands here run against the **same account from M0**; pin `--region us-east-1` for the Secrets-Manager-adjacent calls (Route 53 is global, but stay consistent).
+AWS commands here run against the **same account from M0**, written in `aws` CLI form; in Cowork, run the same API operation through the AWS MCP (`call_boto3`, PascalCase `operation_name`). Pin `us-east-1` (`region_name` / `--region`) — Route 53 is global, but stay consistent.
 
 ## Architecture
 
@@ -51,11 +51,11 @@ By M3 the whole system is in place, so this is a good moment to see it end-to-en
 
 ### M3 deployment view
 
-![Barber platform architecture (M3) — the full M2 booking + payout system with the custom domain bound. The Product Site box, previously labeled *.vercel.app, is now labeled book.yourdomain.com (still Vercel-hosted) — that relabel IS the M3 change. DNS for the domain lives in an AWS Route 53 hosted zone (the same AWS account M0 connected for Secrets Manager); the student adds the domain in Vercel, Vercel emits a CNAME (subdomain) or A/ALIAS (apex) record, and Claude UPSERTs that record into the Route 53 zone via the call_aws MCP. Everything downstream is unchanged: the front-end still calls the Next.js API routes + Supabase (auth + barbers/services/schedules/bookings/payouts tables), and Stripe Checkout + the Stripe webhook still mark bookings paid — except, if Stripe is live, the webhook endpoint URL is repointed from *.vercel.app to book.yourdomain.com. AWS Secrets Manager (barber-project/*) and the 20/80 commission monthly-settlement flow are untouched. Legend: orange = manual input, teal = main component, pink = user data.](assets/architecture-m3.png)
+![Barber platform architecture (M3) — the full M2 booking + payout system with the custom domain bound. The Product Site box, previously labeled *.vercel.app, is now labeled book.yourdomain.com (still Vercel-hosted) — that relabel IS the M3 change. DNS for the domain lives in an AWS Route 53 hosted zone (the same AWS account M0 connected for Secrets Manager); the student adds the domain in Vercel, Vercel emits a CNAME (subdomain) or A/ALIAS (apex) record, and Claude UPSERTs that record into the Route 53 zone via the AWS MCP. Everything downstream is unchanged: the front-end still calls the Next.js API routes + Supabase (auth + barbers/services/schedules/bookings/payouts tables), and Stripe Checkout + the Stripe webhook still mark bookings paid — except, if Stripe is live, the webhook endpoint URL is repointed from *.vercel.app to book.yourdomain.com. AWS Secrets Manager (barber-project/*) and the 20/80 commission monthly-settlement flow are untouched. Legend: orange = manual input, teal = main component, pink = user data.](assets/architecture-m3.png)
 
 How the diagram maps to M3:
 - **Product Site relabel `*.vercel.app` → `barber.yourdomain.com`** (top): Step 1 adds the domain in Vercel; Step 2 makes DNS point at Vercel via Route 53; Step 3 turns it green + HTTPS. The hosting target does **not** move — it's the same Vercel deployment, just a new address.
-- **Route 53 hosted zone (AWS, from M0):** Step 2 creates the Vercel-provided record here via `call_aws`. **No new AWS auth** — it's the account you set up in M0 for Secrets Manager.
+- **Route 53 hosted zone (AWS, from M0):** Step 2 creates the Vercel-provided record here via the AWS MCP. **No new AWS auth** — it's the account you set up in M0 for Secrets Manager.
 - **Stripe webhook → `barber.yourdomain.com`** (right): Step 4, *only if Stripe is already live* — repoint the webhook endpoint so confirmations keep landing ([[stripe-go-live]]).
 - **Everything else unchanged:** Next.js API routes, Supabase tables, the booking lifecycle, the 20/80 monthly settlement — M3 touches no app code.
 
@@ -64,7 +64,7 @@ How the diagram maps to M3:
 You (Claude Code) drive the student through **4 steps**, in order. Don't dump them all at once — after each step, **wait for confirmation** before moving on. (And run [[m3-domain-prerequisites]] before Step 1.)
 
 1. Add the custom domain (`barber.<domain>`) in Vercel → read off the DNS records Vercel shows (incl. the `_vercel` TXT if the domain is linked elsewhere)
-2. Create those records in the Route 53 hosted zone (`call_aws` → `UPSERT`; **merge** the shared `_vercel` TXT)
+2. Create those records in the Route 53 hosted zone (AWS MCP `ChangeResourceRecordSets` → `UPSERT`; **merge** the shared `_vercel` TXT)
 3. Wait for Vercel to verify (green ✓) + the HTTPS cert → point Supabase Auth Site URL at the new host
 4. *(If Stripe is live)* update the Stripe webhook endpoint URL → then **offer** the checklist (don't auto-run it)
 
@@ -110,7 +110,7 @@ The DNS for the domain lives in a **Route 53 hosted zone** in the **same AWS acc
 
 **First, confirm the zone and its id** (read-only):
 ```bash
-# via the AWS API MCP (call_aws) or CLI — find the public zone whose Name == "<domain>." (trailing dot)
+# via the AWS MCP (route53 ListHostedZones) or CLI — find the public zone whose Name == "<domain>." (trailing dot)
 aws route53 list-hosted-zones \
   --query "HostedZones[].{name:Name,id:Id,private:Config.PrivateZone}"
 ```
@@ -174,7 +174,7 @@ Swap in **whatever exact target Vercel printed** (it may be a project-specific `
 
 > **Apex case (only if the student chose the bare apex):** Vercel showed an `A` to `76.76.21.21`. `UPSERT` an `A` record at the zone root with that IP, **or** a Route 53 `ALIAS` A-record targeting Vercel — `Type: "A"`, `Name: "yourdomain.com"`. Do **not** create a `CNAME` at the apex.
 
-> **Note for Claude Code:** **always `UPSERT`, never a blind create that could clobber an existing record set.** If the zone already has records for that exact host (e.g. an old parked `CNAME`), `UPSERT` cleanly replaces just that one record set; a manual delete-then-create risks a window of broken DNS. And **never touch unrelated record sets** in the zone — they may belong to the student's email or another project. (See [[aws-secrets-best-practice]] for the Route 53 SOP — same `call_aws` shorthand gotchas as the M0 Secrets Manager calls.)
+> **Note for Claude Code:** **always `UPSERT`, never a blind create that could clobber an existing record set.** If the zone already has records for that exact host (e.g. an old parked `CNAME`), `UPSERT` cleanly replaces just that one record set; a manual delete-then-create risks a window of broken DNS. And **never touch unrelated record sets** in the zone — they may belong to the student's email or another project. (See [[aws-secrets-best-practice]] for the Route 53 SOP — same AWS MCP (`call_boto3`) conventions as the M0 Secrets Manager calls.)
 
 ---
 
@@ -249,7 +249,7 @@ Once the domain is green + Supabase Site URL is set, tell the student setup is d
 - Vercel + Route 53: https://vercel.com/docs/projects/domains/working-with-domains
 - AWS Route 53 `change-resource-record-sets`: https://docs.aws.amazon.com/Route53/latest/APIReference/API_ChangeResourceRecordSets.html
 - Route 53 ALIAS records: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-choosing-alias-non-alias.html
-- [[m3-domain-prerequisites]] — the lightweight carryover check (Vercel green, `call_aws` reaches Route 53, domain in hand) before touching DNS.
+- [[m3-domain-prerequisites]] — the lightweight carryover check (Vercel green, the AWS MCP reaches Route 53, domain in hand) before touching DNS.
 - [[m3-domain-checklist]] — all verification lives here.
-- [[aws-secrets-best-practice]] — the Route 53 record-management SOP + `call_aws` shorthand gotchas (same account as M0 Secrets Manager).
+- [[aws-secrets-best-practice]] — the Route 53 record-management SOP + AWS MCP (`call_boto3`) conventions (same account as M0 Secrets Manager).
 - [[stripe-go-live]] — the optional sandbox→live Stripe switch (sets the live webhook on the custom domain).
