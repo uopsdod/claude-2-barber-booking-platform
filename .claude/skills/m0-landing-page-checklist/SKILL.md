@@ -169,27 +169,16 @@ what org and projects do I have in my supabase organization?
 
 **Set up Connector / AWS**
 
-*Set up the AWS credential*
+*Sign in to AWS (root user)*
 - AWS email (ex. `uopsfof+barber@gmail.com`).
 - Sign in https://aws.amazon.com/console/ → Root user → click **Forgot password** → go to email and set a new password → sign in again.
-- Go to **IAM** → **Users** → Create `admin-for-project-barber-booking-platform-001` user → attach **AdministratorAccess** policy → Create → **access key: CLI**.
-- Click the new IAM user → **Security credentials** tab → **Create access key** → click **CLI** → Create key.
-- Replace the AWS access key and AWS secret key below.
 
-> Claude Code / 桌面版
-
-Prompt """
-I have new AWS credentials I want to configure. Please write them to my AWS credentials file. Here are the values:
-Access key ID: XXXXX
-Secret access key: XXXXX
-First, detect whether I'm on Mac/Linux or Windows to determine the correct credentials file path 
-(~/.aws/credentials on Mac/Linux, %USERPROFILE%\.aws\credentials on Windows), 
-then write the [default] profile with the new values — preserving any other existing profiles in the file. 
-Once done, test the connection using aws sts get-caller-identity.
-"""
-
-*Add the AWS connector*
-- Go back to the Cowork tab → **Customize → Connectors** → search for **"AWS API MCP"** → **Install**.
+*Add the AWS MCP connector (OAuth — no IAM user, no access key)*
+- Cowork → **Customize → Connectors**. If **AWS API MCP** is installed, **disable** it.
+- **Add → AWS MCP**, server URL: `https://aws-mcp.us-east-1.api.aws/mcp?oauth=initialize`
+- **Continue → Add → Connect → Continue** → wait for **Connecting…**
+- **Sign into new session** → browser opens → sign in as the **Root user**.
+- When Cowork shows **Needs approval** → **Always allow**.
 
 Prompt """
 How many IAM users do I have now on my aws account? 
