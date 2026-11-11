@@ -19,11 +19,11 @@ Confirms the things M3 actually changes are live: **(1) the Route 53 record matc
 
 | Section | CLI mode tool | Cowork mode equivalent |
 |---|---|---|
-| A — Route 53 record matches Vercel | `aws route53 list-resource-record-sets` | AWS API MCP (`call_aws`) |
+| A — Route 53 record matches Vercel | `aws route53 list-resource-record-sets` | AWS MCP (`route53` `ListResourceRecordSets`) |
 | B — domain serves HTTPS + booking works | `curl` + browser | URL-fetch MCP (sandbox `curl` is proxy-blocked) + browser |
 | C — Stripe webhook (if live) | Stripe dashboard | Stripe dashboard (no webhook MCP) |
 
-`aws` / `call_aws` calls run against the **same account from M0**. The sandbox `curl` is proxy-blocked in Cowork — use a URL-fetch tool for any live-host check.
+AWS calls (CLI or AWS MCP) run against the **same account from M0**. The sandbox `curl` is proxy-blocked in Cowork — use a URL-fetch tool for any live-host check.
 
 ## How to run
 
@@ -32,7 +32,7 @@ Ask the student for: their **custom domain / host** (`barber.yourdomain.com`), t
 ### Section A — Route 53 record matches the Vercel-provided values
 - **A1** The record set for the host exists and matches what Vercel asked for in [[m3-domain]] Step 1:
   ```bash
-  # via call_aws or CLI — the record for the bound host
+  # via the AWS MCP (ListResourceRecordSets) or CLI — the record for the bound host
   aws route53 list-resource-record-sets --hosted-zone-id <zone-id> \
     --query "ResourceRecordSets[?Name=='barber.yourdomain.com.']"
   ```
